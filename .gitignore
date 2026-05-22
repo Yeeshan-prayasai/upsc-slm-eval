@@ -1,0 +1,68 @@
+# Credentials and secrets — NEVER commit
+db-creds.txt
+*.env
+.env*
+*credentials*
+*.pem
+*.key
+secrets/
+.aws/
+.anthropic/
+.google/
+
+# Result store (contains predictions derived from student PII)
+results/
+runs/
+
+# Data artifacts (large, deterministically rebuilt from Postgres)
+data/*.parquet
+data/*.jsonl
+data/*.sha256
+data/hindi_probe.parquet
+data/prayas_local.sqlite
+data/prayas_local.sqlite-journal
+data/prayas_local.sqlite-wal
+data/prayas_local.sqlite-shm
+data/ft_split/
+# (data/upsc_facts.json IS committed — small, deterministic, public-sourced)
+
+# Trained adapters (large; published to S3 archive instead)
+adapters/
+*.npz
+*.safetensors
+
+# Model cache (huge HF downloads)
+models/cache/
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Streamlit
+.streamlit/secrets.toml

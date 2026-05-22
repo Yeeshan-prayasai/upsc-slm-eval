@@ -1,0 +1,43 @@
+# LoRA fine-tuning config for UPSC multi-task adapters.
+# Same recipe applied to both Gemma-4-E4B-it and Qwen3.5-4B (per H1 in
+# experiment-report.md §1.2: only the base model is the variable).
+# `--model` and `--adapter-path` are injected by scripts/run_ft.py.
+#
+# REQUIRES: 24 GB unified-memory M-series + macOS GPU cap raised via
+#   `sudo sysctl iogpu.wired_limit_mb=21504`
+# and the in-process MLX memory caps applied by scripts/run_ft.py
+# (set_wired_limit, set_cache_limit, clear_cache). Without those, the
+# val→train transition OOMs on the default Metal cap (~12 GB on 16 GB,
+# ~18 GB on 24 GB) per open mlx-lm issues #828 + #1185.
+
+fine_tune_type: "lora"   # NOT dora — MLX's DoRA materializes the dense norm, eats budget
+num_layers: 16            # last 16 of 32 (Qwen) / 16 of 42 (Gemma) — middle-band coverage
+                          # for factual-recall locus (Meng et al., NeurIPS 2022).
+
+lora_parameters:
+  rank: 16                # 0.5–2 % trainable-param band where QLoRA matches full FT
+                          # (Dettmers et al., NeurIPS 2023).
+  alpha: 32               # standard 2× rank
+  scale: 10.0
+  dropout: 0.05
+  keys:
+    - "self_attn.q_proj"
+    - "self_attn.k_proj"
+    - "self_attn.v_proj"
+    - "self_attn.o_proj"
+    - "mlp.gate_proj"
+    - "mlp.up_proj"
+    - "mlp.down_proj"
+
+learning_rate: 2.0e-4
+batch_size: 1
+grad_accumulation_steps: 8   # effective batch 8 at zero extra peak memory (standard QLoRA)
+iters: 16000                 # ≈ 3 epochs over 42,701 pairs at effective batch 8
+max_seq_length: 2048         # covers p99 of the corpus (~2.4K tokens); <2 % truncated
+grad_checkpoint: true
+seed: 20260514
+
+steps_per_report: 50
+steps_per_eval: 500
+val_batches: 25              # halved — reduces val→train cache residual (mlx-lm #828)
+save_every: 1000

@@ -1,0 +1,39 @@
+# --- PyPI deps for Phases 1-6 (data plane → inference → scoring) ---
+# Git-only Phase 6 deps (summac, alignscore, factscore, bleurt-pytorch) are
+# deferred — they cover faithfulness/regression metrics that are not headline
+# Tier-1 KPIs for v1. They'll ship via a separate requirements-scoring-git.txt
+# if/when re-enabled. anthropic key is unused for v1 (Path C, Tier-2 dropped).
+
+# Data + DB
+psycopg2-binary==2.9.11
+pandas==2.2.3
+pyarrow==18.1.0
+numpy==2.1.3
+jsonschema==4.23.0
+
+# Stats (Phases 3, 6)
+scipy==1.15.0
+scikit-learn==1.6.0
+statsmodels==0.14.4
+
+# Phase 6 scoring (PyPI-installable subset)
+evaluate==0.4.5
+rouge-score==0.1.2
+sacrebleu==2.5.1
+nltk==3.9.4
+textstat==0.7.13   # 0.7.4 had a pkg_resources import that broke under setuptools 70+
+torchmetrics==1.5.2
+bert-score==0.3.13
+spacy==3.8.2       # en_core_web_sm installed separately via `python -m spacy download en_core_web_sm`
+
+# Inference (Phases 3, 4, 5)
+mlx-lm @ git+https://github.com/ml-explore/mlx-lm.git@df1d3f3c9a7aae402dcbb8f41d4c36bcc13a50ae   # pin past 0.31.3 — picks up commit df1d3f3c "Fix Gemma 4 sanitize() not stripping KV projections for shared layers" (2026-05-04), required for Gemma-4-E4B layers 24-41 to load. Revert to a tagged ==0.32.x once published.
+google-genai==1.18.0
+anthropic==0.45.0
+tenacity==9.0.0
+
+# Dashboard (Phase 7)
+streamlit==1.42.0
+
+# Testing
+pytest==8.3.4

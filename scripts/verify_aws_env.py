@@ -84,6 +84,14 @@ def check_bitsandbytes() -> None:
         from bitsandbytes.nn import Linear4bit
     except ImportError as e:
         _fail(f"bitsandbytes not installed: {e}")
+    # transformers 5.x's BnB 4-bit quantizer requires bnb >= 0.46.1 (validated
+    # at model-load time, which is too late). Check version-tuple here so the
+    # 5-second verifier catches it instead of the 30-second model load.
+    bnb_v = tuple(int(p) for p in bnb.__version__.split(".")[:3])
+    if bnb_v < (0, 46, 1):
+        _fail(f"bitsandbytes {bnb.__version__} is too old; "
+              f"transformers 5.x requires >= 0.46.1. "
+              f"`pip install -r requirements-aws.txt` to upgrade.")
     try:
         layer = Linear4bit(
             512, 512, bias=False, quant_type="nf4",

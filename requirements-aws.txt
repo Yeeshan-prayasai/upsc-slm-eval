@@ -7,7 +7,7 @@
 torch==2.5.1                  # ships in the DLAMI; pinned here for the matrix
 transformers==5.9.0           # qwen3_5 + gemma4 — 4.56.2 didn't have qwen3_5 model class yet
 peft==0.19.1                  # LoRA + layers_to_transform; latest 0.x as of May 2026
-bitsandbytes==0.44.1          # 4-bit NF4 quantization (Dettmers QLoRA NeurIPS 2023)
+bitsandbytes==0.49.2          # 4-bit NF4 quantization (Dettmers QLoRA NeurIPS 2023). transformers 5.x requires bnb >= 0.46.1
 accelerate==1.13.0            # required >= 1.4 by trl 1.5
 trl==1.5.0                    # SFTTrainer (chat-format jsonl). 1.x API: SFTConfig + processing_class kwargs unchanged
 rich==13.9.4                  # trl lazy-imports rich; not pulled as transitive dep

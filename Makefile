@@ -1,6 +1,6 @@
 .PHONY: verify-env snapshot build-facts freeze build-ft-corpus export-corpus \
         probe-hindi gate-hindi \
-        ft-gemma ft-qwen materialize-ft-split ft-gemma-aws ft-qwen-aws \
+        ft-gemma ft-qwen materialize-ft-split verify-aws-env ft-gemma-aws ft-qwen-aws \
         validate-gemma validate-qwen \
         infer infer-c1a infer-c1b infer-c2 infer-c3 \
         score-tier1 aggregate test-hypotheses \
@@ -44,16 +44,22 @@ ft-qwen: build-ft-corpus
 	                         --adapter-out adapters/qwen35-4b-upsc-v1
 
 # --- AWS path (NVIDIA GPU; PyTorch + peft + bnb) ---------------------------
-# Run only on a CUDA host (e.g. g6.xlarge). Expects data/ft_split/{train,valid}.jsonl
-# already on disk — produced locally via `make materialize-ft-split` then S3-synced.
+# Run only on a CUDA host (e.g. g6e.xlarge). Expects data/ft_split/{train,valid}.jsonl
+# already on disk — produced locally via `make materialize-ft-split` then SCP'd up.
 materialize-ft-split: build-ft-corpus
 	$(PYTHON) scripts/run_ft.py --materialize-only
 
-ft-qwen-aws:
+# Pre-flight environment verifier — hard-fails before any training starts if
+# the GPU isn't visible, bnb doesn't load, HF isn't authenticated, training
+# data is missing, or the disk is too tight. Idempotent.
+verify-aws-env:
+	$(PYTHON) scripts/verify_aws_env.py
+
+ft-qwen-aws: verify-aws-env
 	$(PYTHON) scripts/run_ft_aws.py --base Qwen/Qwen3.5-4B \
 	                                --adapter-out adapters/qwen35-4b-upsc-v1
 
-ft-gemma-aws:
+ft-gemma-aws: verify-aws-env
 	$(PYTHON) scripts/run_ft_aws.py --base google/gemma-4-E4B-it \
 	                                --adapter-out adapters/gemma4-e4b-upsc-v1
 

@@ -1,6 +1,6 @@
 .PHONY: verify-env snapshot build-facts freeze build-ft-corpus export-corpus \
         probe-hindi gate-hindi \
-        ft-gemma ft-qwen ft-gemma-aws ft-qwen-aws \
+        ft-gemma ft-qwen materialize-ft-split ft-gemma-aws ft-qwen-aws \
         validate-gemma validate-qwen \
         infer infer-c1a infer-c1b infer-c2 infer-c3 \
         score-tier1 aggregate test-hypotheses \
@@ -45,7 +45,10 @@ ft-qwen: build-ft-corpus
 
 # --- AWS path (NVIDIA GPU; PyTorch + peft + bnb) ---------------------------
 # Run only on a CUDA host (e.g. g6.xlarge). Expects data/ft_split/{train,valid}.jsonl
-# already on disk — produced locally by `make build-ft-corpus` then S3-synced.
+# already on disk — produced locally via `make materialize-ft-split` then S3-synced.
+materialize-ft-split: build-ft-corpus
+	$(PYTHON) scripts/run_ft.py --materialize-only
+
 ft-qwen-aws:
 	$(PYTHON) scripts/run_ft_aws.py --base Qwen/Qwen3.5-4B \
 	                                --adapter-out adapters/qwen35-4b-upsc-v1

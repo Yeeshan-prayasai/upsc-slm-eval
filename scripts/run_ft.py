@@ -60,23 +60,35 @@ def materialize_jsonl(corpus_path: Path) -> tuple[Path, int, int]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", required=True, help="HF id of an MLX base model")
-    ap.add_argument("--adapter-out", type=Path, required=True)
+    ap.add_argument("--base", help="HF id of an MLX base model (required unless --materialize-only)")
+    ap.add_argument("--adapter-out", type=Path,
+                    help="(required unless --materialize-only)")
     ap.add_argument("--corpus", type=Path, default=REPO / "data/ft_corpus.parquet")
     ap.add_argument("--config", type=Path, default=REPO / "configs/lora.yaml")
+    ap.add_argument("--materialize-only", action="store_true",
+                    help="just produce data/ft_split/{train,valid}.jsonl and exit "
+                         "(used to prep data for the AWS path without invoking MLX)")
     args = ap.parse_args()
 
     if not args.corpus.exists():
         print(f"[FAIL] {args.corpus} not found; run `make build-ft-corpus` first")
-        return 1
-    if not args.config.exists():
-        print(f"[FAIL] {args.config} not found")
         return 1
 
     print(f"Materializing JSONL split (seed={SEED}, valid_frac={VALID_FRACTION}) …")
     data_dir, n_train, n_valid = materialize_jsonl(args.corpus)
     print(f"  train: {n_train:,} → {data_dir / 'train.jsonl'}")
     print(f"  valid: {n_valid:,} → {data_dir / 'valid.jsonl'}")
+
+    if args.materialize_only:
+        print(f"\n[OK] materialize-only complete; skipping MLX LoRA training")
+        return 0
+
+    if not args.base or not args.adapter_out:
+        print("[FAIL] --base and --adapter-out are required unless --materialize-only is set")
+        return 1
+    if not args.config.exists():
+        print(f"[FAIL] {args.config} not found")
+        return 1
 
     # MLX memory safety. The default Metal cap on a 16 GB box is ~12 GB and on
     # a 24 GB box is ~18 GB. The training peak for a 4B LoRA at seq=2048 batch=1

@@ -10,6 +10,7 @@ peft==0.13.2                  # LoRA + layers_to_transform support
 bitsandbytes==0.44.1          # 4-bit NF4 quantization (Dettmers QLoRA NeurIPS 2023)
 accelerate==1.0.1             # multi-device dispatch (single-GPU here but required by trl)
 trl==0.11.4                   # SFTTrainer (handles chat-format jsonl natively)
+rich==13.9.4                  # trl 0.11.x lazy-imports rich for SFTTrainer; not pulled in automatically
 datasets==3.0.2               # load_dataset('json', ...)
 sentencepiece==0.2.0          # Qwen + Gemma tokenizers
 einops==0.8.0                 # transformer math

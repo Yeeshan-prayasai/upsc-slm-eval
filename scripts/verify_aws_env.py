@@ -67,6 +67,16 @@ def check_gpu_and_torch() -> None:
     _ok(f"torch {torch.__version__} (built for CUDA {torch.version.cuda})")
 
 
+def check_trl_sft_trainer() -> None:
+    """Import SFTTrainer specifically — it lazy-loads rich/other deps."""
+    try:
+        from trl import SFTTrainer, SFTConfig
+    except ImportError as e:
+        _fail(f"trl.SFTTrainer import failed: {e}. "
+              f"`pip install -r requirements-aws.txt` may be stale.")
+    _ok(f"trl.SFTTrainer + SFTConfig importable")
+
+
 def check_bitsandbytes() -> None:
     try:
         import bitsandbytes as bnb
@@ -140,6 +150,7 @@ def main() -> int:
     print(f"\nPre-flight verification for AWS fine-tune ({REPO.name})\n")
     check_gpu_and_torch()
     check_bitsandbytes()
+    check_trl_sft_trainer()
     check_hf_auth()
     check_disk()
     check_ft_data()

@@ -5,12 +5,12 @@
 # MLX. Mac side uses requirements.txt as-is.
 
 torch==2.5.1                  # ships in the DLAMI; pinned here for the matrix
-transformers==4.46.3          # gemma4 + qwen3_5 architectures supported from 4.46+
-peft==0.13.2                  # LoRA + layers_to_transform support
+transformers==4.56.2          # minimum that has qwen3_5 + gemma4 model classes and is compat w/ trl 1.5
+peft==0.19.1                  # LoRA + layers_to_transform; latest 0.x as of May 2026
 bitsandbytes==0.44.1          # 4-bit NF4 quantization (Dettmers QLoRA NeurIPS 2023)
-accelerate==1.0.1             # multi-device dispatch (single-GPU here but required by trl)
-trl==0.11.4                   # SFTTrainer (handles chat-format jsonl natively)
-rich==13.9.4                  # trl 0.11.x lazy-imports rich for SFTTrainer; not pulled in automatically
-datasets==3.0.2               # load_dataset('json', ...)
+accelerate==1.13.0            # required >= 1.4 by trl 1.5
+trl==1.5.0                    # SFTTrainer (chat-format jsonl). 1.x API: SFTConfig + processing_class kwargs unchanged
+rich==13.9.4                  # trl lazy-imports rich; not pulled as transitive dep
+datasets==4.7.0               # required >= 4.7 by trl 1.5
 sentencepiece==0.2.0          # Qwen + Gemma tokenizers
 einops==0.8.0                 # transformer math

@@ -233,8 +233,9 @@ def main() -> int:
 
     args.adapter_out.mkdir(parents=True, exist_ok=True)
 
-    # --- Trainer config. trl 1.5 SFTConfig keys verified:
-    #   - max_seq_length      → kept
+    # --- Trainer config. trl 1.5 SFTConfig keys (all verified against
+    #     dataclasses.fields(SFTConfig) at install time):
+    #   - max_length          → trl 1.x renamed `max_seq_length` to this
     #   - eval_strategy       → kept (trl deprecated `evaluation_strategy` in 0.14)
     #   - dataset_text_field  → omit; trl 1.5 auto-detects 'messages' chat format
     #   - packing             → kept
@@ -245,7 +246,7 @@ def main() -> int:
         per_device_eval_batch_size=1,
         gradient_accumulation_steps=GRAD_ACCUM_STEPS,
         learning_rate=LEARNING_RATE,
-        max_seq_length=MAX_SEQ_LENGTH,
+        max_length=MAX_SEQ_LENGTH,        # was max_seq_length in trl 0.x
         warmup_steps=WARMUP_STEPS,
         logging_steps=LOGGING_STEPS,
         eval_strategy="steps",

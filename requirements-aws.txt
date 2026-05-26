@@ -1,0 +1,15 @@
+# AWS-side fine-tune deps (NVIDIA L4 / A10G — drop-in for the MLX path).
+# Install on the EC2 instance (Deep Learning AMI Ubuntu 22.04 ships with
+# CUDA 12.4 + PyTorch already). Do NOT install on the Mac — bitsandbytes
+# has no Apple-Silicon wheel and torch will pull a CPU build that breaks
+# MLX. Mac side uses requirements.txt as-is.
+
+torch==2.5.1                  # ships in the DLAMI; pinned here for the matrix
+transformers==4.46.3          # gemma4 + qwen3_5 architectures supported from 4.46+
+peft==0.13.2                  # LoRA + layers_to_transform support
+bitsandbytes==0.44.1          # 4-bit NF4 quantization (Dettmers QLoRA NeurIPS 2023)
+accelerate==1.0.1             # multi-device dispatch (single-GPU here but required by trl)
+trl==0.11.4                   # SFTTrainer (handles chat-format jsonl natively)
+datasets==3.0.2               # load_dataset('json', ...)
+sentencepiece==0.2.0          # Qwen + Gemma tokenizers
+einops==0.8.0                 # transformer math

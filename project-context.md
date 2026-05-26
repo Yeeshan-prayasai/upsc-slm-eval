@@ -413,3 +413,73 @@ What to send back:
 3. A line from `sysctl iogpu.wired_limit_mb` and `python -c "import mlx.core as mx; print(mx.get_peak_memory()/1024**3)"` from the end of training (for the experiment-report §6.1 run-metadata section).
 
 If anything OOMs again: send the last 50 lines of the training log and `vm_stat` output; we triage from there.
+
+- 2026-05-26 (AWS pivot — EC2 g6.xlarge / L4 24 GB / QLoRA via PyTorch + peft + bnb): User opted to move the FT step to AWS rather than wait on a 24 GB Mac. AWS has no Apple Silicon, so MLX is off the table for FT; switch to PyTorch + HuggingFace `peft` + `bitsandbytes` (NF4 QLoRA per Dettmers et al. NeurIPS 2023). Published QLoRA-vs-MLX adaptation-quality gap < 2 %, so the framework switch is cheap. **Instance choice:** `g6.xlarge` (1× NVIDIA L4 24 GB VRAM, $0.805/hr on-demand, us-east-1) — sweet spot for 4B LoRA at our budget. Total cost estimate: ~$20-25 for both adapters at ~12 h each. SageMaker rejected as orchestration overkill for a one-off FT; Bedrock rejected (no Qwen/Gemma FT support); Trainium rejected (likely missing gemma4 / qwen3_5 model classes — same rabbit hole we just exited). Inference stays on the local M5 (free); only the FT step moves to AWS. **Code committed:** `scripts/run_ft_aws.py` (~100 LOC) — symbolic mirror of `run_ft.py` with the same rank=16, alpha=32, num_layers=16 (translated to peft `layers_to_transform=[last 16]`), target_modules=[q,k,v,o,gate,up,down]_proj, grad_accum=8, max_seq=2048, max_steps=16000, paged_adamw_8bit optimizer; `requirements-aws.txt` pinned (torch 2.5.1, transformers 4.46.3, peft 0.13.2, bitsandbytes 0.44.1, trl 0.11.4, accelerate 1.0.1, datasets 3.0.2); Makefile gains `ft-qwen-aws` + `ft-gemma-aws` targets. Adapter outputs are HF/peft format; convert to MLX for local inference via `mlx_lm convert --hf-path adapters/<name>` when adapters land back.
+
+## AWS runbook — EC2 g6.xlarge fine-tune (us-east-1)
+
+Pre-requisites:
+- AWS CLI configured (`aws sts get-caller-identity` works)
+- An EC2 key pair, security group allowing SSH from your IP
+- HuggingFace token (`hf_...`) for the gated Gemma-4-E4B-it download
+
+**1. Spin up the instance** (Deep Learning AMI ships with CUDA 12.4 + PyTorch 2.5):
+
+```bash
+# Latest DLAMI for us-east-1 — verify before launch as AMI IDs change
+AMI_ID=$(aws ec2 describe-images --region us-east-1   --owners amazon   --filters "Name=name,Values=Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04)*"   --query "Images | sort_by(@,&CreationDate)[-1].ImageId" --output text)
+
+aws ec2 run-instances   --region us-east-1   --image-id $AMI_ID   --instance-type g6.xlarge   --key-name <your-key>   --security-group-ids <sg-...>   --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":120,"VolumeType":"gp3"}}]'   --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=upsc-slm-ft}]'
+
+# Note the InstanceId, then:
+IP=$(aws ec2 describe-instances --region us-east-1 --instance-ids <i-...>        --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
+ssh -i ~/.ssh/<your-key>.pem ubuntu@$IP
+```
+
+**2. On the instance — first-time setup**:
+
+```bash
+git clone https://github.com/YeeshanMalik/upsc-slm-eval.git
+cd upsc-slm-eval
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements-aws.txt
+huggingface-cli login   # paste hf_... token (needed for gated Gemma-4-E4B-it)
+```
+
+**3. Pull training data from S3** (assumes you uploaded data/ft_split/{train,valid}.jsonl from the M5 first):
+
+```bash
+mkdir -p data/ft_split
+aws s3 sync s3://<your-bucket>/upsc-slm/ft_split/ data/ft_split/
+ls -lh data/ft_split/    # expect train.jsonl ~150 MB, valid.jsonl ~8 MB
+```
+
+**4. Fine-tune both adapters** (sequential; ~12 h each; resumable via checkpoints under adapters/<name>/checkpoint-N/):
+
+```bash
+PYTHON=python make ft-qwen-aws  2>&1 | tee /tmp/ft-qwen-aws.log
+PYTHON=python make ft-gemma-aws 2>&1 | tee /tmp/ft-gemma-aws.log
+```
+
+**5. Push adapters back to S3 + tear down**:
+
+```bash
+aws s3 sync adapters/ s3://<your-bucket>/upsc-slm/adapters/
+sudo shutdown -h now    # OR locally: aws ec2 terminate-instances --instance-ids <i-...>
+```
+
+**6. On the M5 — pull adapters, convert to MLX, resume**:
+
+```bash
+aws s3 sync s3://<your-bucket>/upsc-slm/adapters/ adapters/
+python -m mlx_lm convert --hf-path adapters/qwen35-4b-upsc-v1  --mlx-path adapters/qwen35-4b-upsc-v1-mlx  -q --q-bits 4
+python -m mlx_lm convert --hf-path adapters/gemma4-e4b-upsc-v1 --mlx-path adapters/gemma4-e4b-upsc-v1-mlx -q --q-bits 4
+make validate-qwen
+make validate-gemma
+make infer-c1a infer-c1b infer-c2 infer-c3   # Stage 4 — inference (~$50 Gemini API for C2+C3)
+make score-tier1 aggregate test-hypotheses   # Stage 5 — scoring
+```
+
+**Cost ceiling:** kill the instance the moment FT finishes — `g6.xlarge` is ~$0.80/h × ~24 h = ~$20 if you don't forget. Set a billing alert at $50 in CloudWatch as a safety net.

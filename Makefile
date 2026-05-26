@@ -1,6 +1,7 @@
 .PHONY: verify-env snapshot build-facts freeze build-ft-corpus export-corpus \
         probe-hindi gate-hindi \
-        ft-gemma ft-qwen validate-gemma validate-qwen \
+        ft-gemma ft-qwen ft-gemma-aws ft-qwen-aws \
+        validate-gemma validate-qwen \
         infer infer-c1a infer-c1b infer-c2 infer-c3 \
         score-tier1 aggregate test-hypotheses \
         test clean
@@ -41,6 +42,17 @@ ft-gemma: build-ft-corpus
 ft-qwen: build-ft-corpus
 	$(PYTHON) scripts/run_ft.py --base mlx-community/Qwen3.5-4B-MLX-4bit \
 	                         --adapter-out adapters/qwen35-4b-upsc-v1
+
+# --- AWS path (NVIDIA GPU; PyTorch + peft + bnb) ---------------------------
+# Run only on a CUDA host (e.g. g6.xlarge). Expects data/ft_split/{train,valid}.jsonl
+# already on disk — produced locally by `make build-ft-corpus` then S3-synced.
+ft-qwen-aws:
+	$(PYTHON) scripts/run_ft_aws.py --base Qwen/Qwen3.5-4B \
+	                                --adapter-out adapters/qwen35-4b-upsc-v1
+
+ft-gemma-aws:
+	$(PYTHON) scripts/run_ft_aws.py --base google/gemma-4-E4B-it \
+	                                --adapter-out adapters/gemma4-e4b-upsc-v1
 
 validate-gemma:
 	$(PYTHON) scripts/validate_adapter.py --base mlx-community/gemma-4-e4b-it-4bit \

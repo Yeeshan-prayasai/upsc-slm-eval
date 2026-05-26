@@ -5,7 +5,7 @@
 # MLX. Mac side uses requirements.txt as-is.
 
 torch==2.5.1                  # ships in the DLAMI; pinned here for the matrix
-transformers==4.56.2          # minimum that has qwen3_5 + gemma4 model classes and is compat w/ trl 1.5
+transformers==5.9.0           # qwen3_5 + gemma4 — 4.56.2 didn't have qwen3_5 model class yet
 peft==0.19.1                  # LoRA + layers_to_transform; latest 0.x as of May 2026
 bitsandbytes==0.44.1          # 4-bit NF4 quantization (Dettmers QLoRA NeurIPS 2023)
 accelerate==1.13.0            # required >= 1.4 by trl 1.5

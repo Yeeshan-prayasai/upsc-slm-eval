@@ -74,18 +74,25 @@ def main() -> int:
     )
 
     print(f"[load] {args.base} (4-bit NF4, compute=bf16)")
+    # trust_remote_code=True is required for very-recent architectures (qwen3_5,
+    # gemma4 in some transformers versions) whose model classes haven't landed
+    # upstream yet — the model repo ships its own loader. Acceptable on this
+    # short-lived EC2 box; the source repos (Qwen/, google/) are trusted.
     model = AutoModelForCausalLM.from_pretrained(
         args.base, quantization_config=bnb, device_map="auto",
         torch_dtype=torch.bfloat16, attn_implementation="sdpa",
+        trust_remote_code=True,
     )
     model.config.use_cache = False
     model.gradient_checkpointing_enable()
 
-    tokenizer = AutoTokenizer.from_pretrained(args.base, padding_side="right")
+    tokenizer = AutoTokenizer.from_pretrained(args.base, padding_side="right",
+                                              trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    total_layers = AutoConfig.from_pretrained(args.base).num_hidden_layers
+    total_layers = AutoConfig.from_pretrained(args.base,
+                                              trust_remote_code=True).num_hidden_layers
     layers_to_transform = list(range(total_layers - NUM_LORA_LAYERS, total_layers))
     print(f"[lora] r={LORA_R} alpha={LORA_ALPHA} dropout={LORA_DROPOUT} "
           f"layers={layers_to_transform[0]}..{layers_to_transform[-1]} "

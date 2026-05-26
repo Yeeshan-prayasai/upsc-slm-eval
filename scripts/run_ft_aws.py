@@ -133,9 +133,23 @@ def main() -> int:
         train_dataset=train_ds, eval_dataset=eval_ds,
         processing_class=tokenizer,
     )
+
+    # Auto-resume from the latest checkpoint if any exist in the output dir.
+    # SFTTrainer saves to adapters/<name>/checkpoint-N/ every `save_steps`;
+    # if a previous run crashed (OOM, instance reboot, SSH-during-training-via-Stop)
+    # we pick up from the last saved step instead of starting over.
+    checkpoints = sorted(args.adapter_out.glob("checkpoint-*"),
+                         key=lambda p: int(p.name.split("-")[1]))
+    resume = bool(checkpoints)
+    if resume:
+        latest = checkpoints[-1]
+        print(f"[resume] found existing checkpoint {latest.name}; resuming from there")
+    else:
+        print(f"[start]  no existing checkpoints; starting fresh")
+
     print(f"[train] max_steps={MAX_STEPS}  effective_batch={PER_DEVICE_TRAIN_BATCH*GRAD_ACCUM_STEPS}  "
           f"max_seq={MAX_SEQ_LENGTH}  lr={LEARNING_RATE}")
-    trainer.train()
+    trainer.train(resume_from_checkpoint=resume)
     trainer.save_model(str(args.adapter_out))
     tokenizer.save_pretrained(str(args.adapter_out))
     print(f"\n[OK] adapter → {args.adapter_out}")

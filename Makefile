@@ -55,13 +55,16 @@ materialize-ft-split: build-ft-corpus
 verify-aws-env:
 	$(PYTHON) scripts/verify_aws_env.py
 
+# -u: unbuffered stdout/stderr so loss/grad_norm prints flush per-line when run
+# under nohup (no TTY). Without it, Python block-buffers stdout, batching loss
+# output into 8 KB chunks — hides real-time training progress.
 ft-qwen-aws: verify-aws-env
-	$(PYTHON) scripts/run_ft_aws.py --base Qwen/Qwen3.5-4B \
-	                                --adapter-out adapters/qwen35-4b-upsc-v1
+	$(PYTHON) -u scripts/run_ft_aws.py --base Qwen/Qwen3.5-4B \
+	                                   --adapter-out adapters/qwen35-4b-upsc-v1
 
 ft-gemma-aws: verify-aws-env
-	$(PYTHON) scripts/run_ft_aws.py --base google/gemma-4-E4B-it \
-	                                --adapter-out adapters/gemma4-e4b-upsc-v1
+	$(PYTHON) -u scripts/run_ft_aws.py --base google/gemma-4-E4B-it \
+	                                   --adapter-out adapters/gemma4-e4b-upsc-v1
 
 validate-gemma:
 	$(PYTHON) scripts/validate_adapter.py --base mlx-community/gemma-4-e4b-it-4bit \

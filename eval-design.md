@@ -352,7 +352,7 @@ Kendall's τ between Pedagogical-Clarity total and the Tier-1 BERTScore-F1 ranki
 
 ### 4.6 Task F — Prelims Explanation Generation (prayas production prompt)
 
-**Capability test, not new science.** Same trained model checkpoints (C1a, C1b) and same comparator (C2, C3) — only the prompt scaffold changes to prayas's production "Prelims explanation generation" prompt (pending from prayas). Input includes the gold correct-option letter, so unlike Task A the model is not asked to *pick* the answer — it is asked to *write the explanation* given the answer. This is post-hoc rationalization (Wiegreffe & Marasovic, 2021), evaluated against a reference explanation. Bilingual (en + hi). Reuses the 800 Task-A eval items; no new eval set.
+**Capability test, not new science.** Same trained model checkpoints (C1a, C1b) and same comparator (C2, C3) — only the prompt scaffold changes to prayas's production "Prelims explanation generation" prompt (received 2026-05-26, stored at [`configs/prompts/prelims_explanation.md`](configs/prompts/prelims_explanation.md), loaded via `scripts/runners.get_production_prompt("F")`). Input includes the gold correct-option letter, so unlike Task A the model is not asked to *pick* the answer — it is asked to *write the explanation* given the answer. This is post-hoc rationalization (Wiegreffe & Marasovic, 2021), evaluated against a reference explanation. Bilingual (en + hi). Reuses the 800 Task-A eval items; no new eval set.
 
 #### Tier 1 (primary)
 
@@ -383,7 +383,7 @@ Pedagogical-Clarity LLM-judge rubric — the same 5-axis rubric specified for Ta
 
 ### 4.7 Task G — Mains Model-Answer Generation (prayas production prompt)
 
-**Capability test, not new science.** Same trained model checkpoints — only the prompt scaffold changes to prayas's production "Mains model-answer generation" prompt (pending). Reuses the 400 Task-B eval items; no new eval set. The headline question is: *does the production prompt close the gap to gold model-answer style vs the generic Task-B prompt?* Tested as a paired comparison between Task B and Task G output **on the same model + same eval items**, with the prompt as the lone variable.
+**Capability test, not new science.** Same trained model checkpoints — only the prompt scaffold changes to prayas's production "Mains model-answer generation" prompt (received 2026-05-26, stored at [`configs/prompts/mains_model_answer.md`](configs/prompts/mains_model_answer.md), ~21 KB / ~5400 tokens — DSL L1-L4 layers + banned-word/phrase lists + mandatory diagram + R-D-S-C protocol; loaded via `scripts/runners.get_production_prompt("G")`). Reuses the 400 Task-B eval items; no new eval set. The headline question is: *does the production prompt close the gap to gold model-answer style vs the generic Task-B prompt?* Tested as a paired comparison between Task B and Task G output **on the same model + same eval items**, with the prompt as the lone variable. Note: the production prompt is markedly more constrained than the simpler Task-B training scaffold; format-compliance is therefore a meaningful Tier-1 metric on Task G — the FT model was not trained on this DSL.
 
 #### Tier 1 (primary)
 

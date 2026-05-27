@@ -61,13 +61,58 @@ TASK_INSTRUCTIONS = {
 CUTOFF_DATE = "2026-04-30"
 
 
-def assert_no_leakage(eval_ids: set[str], ft_ids: set[str]) -> None:
-    """Raise AssertionError if any eval-set ID appears in the FT corpus."""
-    overlap = eval_ids & ft_ids
-    if overlap:
+def _normalize_question_text(text: str) -> str:
+    """Whitespace-normalize a question stem for content-equality comparison.
+
+    We collapse all runs of whitespace to single spaces and strip — this
+    catches the case where the same UPSC question appears in two source
+    tables with minor formatting variation (extra newlines, trailing space).
+    """
+    import re as _re
+    return _re.sub(r"\s+", " ", (text or "")).strip()
+
+
+def _question_hash(text: str) -> str:
+    import hashlib as _hl
+    return _hl.sha256(_normalize_question_text(text).encode("utf-8")).hexdigest()[:16]
+
+
+def assert_no_leakage(
+    eval_ids: set[str],
+    ft_ids: set[str],
+    eval_question_hashes: set[str] | None = None,
+    ft_question_hashes: set[str] | None = None,
+) -> None:
+    """Hard-fail the build on either form of leakage:
+
+    1. ID-level — any eval pair_id appears in the FT corpus. Catches direct
+       duplication when the same source row goes to both sets.
+    2. Content-level — any eval question's normalized text hash appears in
+       an FT pair's input. Catches the more subtle leak where the SAME
+       UPSC question exists under multiple source tables (e.g., once in
+       `prelims_pyq_questions`, once in `prod.mcqs`) with different
+       pair_ids, so the ID check passes but the model would still be
+       trained on what we test it on.
+    """
+    id_overlap = eval_ids & ft_ids
+    if id_overlap:
         raise AssertionError(
-            f"LEAKAGE: {len(overlap)} eval IDs in FT corpus: {sorted(overlap)[:5]}"
+            f"ID-LEVEL LEAKAGE: {len(id_overlap)} eval IDs in FT corpus: "
+            f"{sorted(id_overlap)[:5]}"
         )
+    if eval_question_hashes is not None and ft_question_hashes is not None:
+        content_overlap = eval_question_hashes & ft_question_hashes
+        # Drop the empty-string hash (defensive — '' should never reach here
+        # but if a row had no question text it would all collapse to one hash).
+        content_overlap.discard(_question_hash(""))
+        if content_overlap:
+            raise AssertionError(
+                f"CONTENT-LEVEL LEAKAGE: {len(content_overlap)} eval question "
+                f"stems appear verbatim in FT inputs. Same UPSC question may "
+                f"exist in multiple source tables with different pair_ids; "
+                f"normalize-and-hash check caught it. Examples: "
+                f"{list(content_overlap)[:5]}"
+            )
 
 
 def _explanation_from_jsonb(expl) -> str:
@@ -256,16 +301,67 @@ def main() -> int:
 
     eval_df = pd.read_parquet(args.eval)
     eval_ids = set(eval_df["question_id"].tolist())
-    print(f"[load] eval-set IDs: {len(eval_ids):,}")
+
+    # --- Compute the set of eval question-text hashes. We extract the question
+    # text from gold_payload (JSON-serialized full record). This is the key
+    # used by the content-level leakage check below.
+    def _eval_question_text(payload: str) -> str:
+        try:
+            d = json.loads(payload)
+            return (d.get("question") or d.get("question_text") or "")
+        except Exception:
+            return ""
+
+    eval_question_hashes = {
+        _question_hash(_eval_question_text(p))
+        for p in eval_df["gold_payload"]
+    }
+    eval_question_hashes.discard(_question_hash(""))   # defensive
+    print(f"[load] eval-set IDs: {len(eval_ids):,}, "
+          f"unique question hashes: {len(eval_question_hashes):,}")
 
     rows: list[dict] = []
     for task, builder in (("A", build_A), ("B", build_B), ("C", build_C), ("E", build_E)):
         n0 = len(rows)
         rows.extend(builder(eval_ids))
-        print(f"  task {task}: +{len(rows) - n0:,}")
+        print(f"  task {task}: +{len(rows) - n0:,} (pre-content-filter)")
+
+    # --- Content-level dedup: drop any FT pair whose question text matches an
+    # eval question's normalized hash. This catches the case where the same
+    # UPSC question appears under multiple source tables with different
+    # pair_ids — pair-id-level check would miss it.
+    def _ft_question_text(input_str: str) -> str:
+        try:
+            d = json.loads(input_str)
+            return (d.get("question") or d.get("question_text") or "")
+        except Exception:
+            return ""
+
+    pre_dedup = len(rows)
+    filtered: list[dict] = []
+    dropped_by_task: dict[str, int] = {}
+    for r in rows:
+        qh = _question_hash(_ft_question_text(r["input"]))
+        if qh in eval_question_hashes:
+            dropped_by_task[r["task"]] = dropped_by_task.get(r["task"], 0) + 1
+            continue
+        filtered.append(r)
+    rows = filtered
+    if dropped_by_task:
+        n_dropped = pre_dedup - len(rows)
+        print(f"\n[content-dedup] dropped {n_dropped:,} FT pairs whose question "
+              f"text matched an eval question (mode: cross-source duplication):")
+        for t, n in sorted(dropped_by_task.items()):
+            print(f"    task {t}: -{n:,}")
 
     ft_ids = {r["pair_id"] for r in rows}
-    assert_no_leakage(eval_ids, ft_ids)
+    ft_question_hashes = {
+        _question_hash(_ft_question_text(r["input"])) for r in rows
+    }
+    ft_question_hashes.discard(_question_hash(""))
+
+    # Both checks run; either failure aborts.
+    assert_no_leakage(eval_ids, ft_ids, eval_question_hashes, ft_question_hashes)
 
     df = pd.DataFrame(rows).sort_values(["task", "pair_id"]).reset_index(drop=True)
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -277,7 +373,7 @@ def main() -> int:
     print(f"\n[OK] wrote {len(df):,} pairs → {args.out}")
     print(f"     SHA-256: {sha}")
     print(f"     by task: {df.groupby('task').size().to_dict()}")
-    print(f"     leakage check: PASS (eval ∩ ft = ∅)")
+    print(f"     leakage check: PASS (ID-level + content-level both empty)")
     return 0
 
 

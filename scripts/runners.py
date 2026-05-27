@@ -27,7 +27,6 @@ MAX_OUT_TOKENS = {"A": 1024, "B": 1500, "C": 1024, "E": 1500}
 # Path A2: the SAME instruction strings used at FT-corpus build time
 # (scripts/build_ft_corpus.py TASK_INSTRUCTIONS). Train-test alignment is the
 # point — the FT'd model sees identical user-message structure at both stages.
-# These will be replaced with prayas's production prompts when provided.
 TASK_INSTRUCTIONS = {
     "A": (
         '[TASK=A] You are taking the UPSC Prelims (Indian Civil Services examination). '
@@ -57,6 +56,50 @@ TASK_INSTRUCTIONS = {
         'analysis: causes, impacts, multi-dimensional framing, way forward>"}'
     ),
 }
+
+
+def _load_production_prompt(name: str) -> str:
+    """Load a prayas production prompt from configs/prompts/ at first call.
+
+    Cached after first load. The on-disk markdown files include explanatory
+    front-matter (provenance, usage notes) which we strip — only the prompt
+    body below the first horizontal rule '---' is returned.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    path = repo_root / "configs" / "prompts" / f"{name}.md"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Production prompt {name!r} not found at {path}. "
+            f"Configure configs/prompts/ first."
+        )
+    text = path.read_text(encoding="utf-8")
+    # Front-matter is everything up to the first top-level horizontal rule
+    # (a standalone `\n---\n` line). Don't use bare `---` — markdown table
+    # separators contain `---` substrings and would split incorrectly.
+    sep = "\n---\n"
+    parts = text.split(sep, maxsplit=1)
+    return parts[1].strip() if len(parts) == 2 else text.strip()
+
+
+# Production prompts for the capability-test tasks F and G.
+# These are loaded lazily from configs/prompts/ so changes don't require
+# code edits. NOT used at FT-corpus build time — Path A2 design.
+PRODUCTION_TASK_INSTRUCTIONS = {
+    # Task F — Prelims Explanation Generation (bilingual). Reuses Task A's
+    # 800 eval items but feeds the GOLD letter as input + production prompt.
+    "F": _load_production_prompt,   # loaded on demand via _load_production_prompt("prelims_explanation")
+    # Task G — Mains Model-Answer Generation. Reuses Task B's 400 eval items
+    # with the prayas DSL prompt (L1-L4, banned words, mandatory diagram, …).
+    "G": _load_production_prompt,
+}
+
+
+def get_production_prompt(task: str) -> str:
+    """Resolve Task F / Task G to its prayas-canonical production prompt."""
+    return {
+        "F": _load_production_prompt("prelims_explanation"),
+        "G": _load_production_prompt("mains_model_answer"),
+    }[task]
 
 
 @dataclass

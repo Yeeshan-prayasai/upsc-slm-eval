@@ -259,6 +259,11 @@ def main() -> int:
         seed=SEED,
         report_to="none",
         packing=False,
+        # transformers 5.x defaults log_level="passive" which silences INFO-level
+        # training logs (loss / lr / grad_norm every `logging_steps`). Force INFO
+        # so we can see the loss curve in stdout as it trains.
+        log_level="info",
+        disable_tqdm=False,
     )
 
     trainer = SFTTrainer(

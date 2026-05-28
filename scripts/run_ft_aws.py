@@ -98,21 +98,26 @@ def _build_target_modules_regex(base: str, total_layers: int,
     """Regex matching exactly the projection modules we want LoRA on,
     scoped to the text decoder's last N layers only.
 
-    For multimodal Qwen3.5 / Gemma-4 the text decoder lives under prefixes
-    like `language_model.model.layers.N` or `model.layers.N`. We match
-    layer indices in [total - lora_layers, total) only, and only the
-    canonical q/k/v/o/gate/up/down projections. The vision/audio towers
-    are left untouched.
+    The text decoder's qualified path varies by model:
+      Qwen3.5-4B (Qwen3_5ForConditionalGeneration):
+          `model.layers.N.{self_attn,mlp}.X_proj`
+      Gemma-4-E4B-it (Gemma4ForConditionalGeneration):
+          `model.language_model.layers.N.{self_attn,mlp}.X_proj`
+
+    Vision and audio towers live at `model.vision_tower....layers.N.*` and
+    `model.audio_tower.layers.N.*` respectively; we must NOT match those.
+
+    We anchor on `^(?:.*\.)?model\.(?:language_model\.)?layers\.<N>\.`
+    — the `language_model.` lives between `model.` and `layers.`,
+    making it OPTIONAL so the same regex covers both bases.
+    Vision/audio paths contain `vision_tower.encoder.` or `audio_tower.`
+    between `model.` and `layers.`, so they're correctly excluded.
     """
     start = total_layers - lora_layers
     layer_idx_re = "|".join(str(i) for i in range(start, total_layers))
     proj_re = "|".join(LORA_PROJ_MODULES)
-    # Match either `language_model.model.layers.N.X.Y_proj` (multimodal wrapper)
-    # or `model.layers.N.X.Y_proj` (text-only). The `(?:language_model\.)?` makes
-    # the wrapper prefix optional, and we anchor on `model.layers.<N>.` so we
-    # never hit projections in vision_tower / audio_tower.
     return (
-        r"^(?:.*\.)?(?:language_model\.)?model\.layers\."
+        r"^(?:.*\.)?model\.(?:language_model\.)?layers\."
         rf"(?:{layer_idx_re})\."
         rf".*\.(?:{proj_re})$"
     )

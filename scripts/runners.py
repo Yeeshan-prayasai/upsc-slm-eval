@@ -421,11 +421,26 @@ class HFTransformersRunner:
               f"{sum(p.numel() for p in self.model.parameters()) / 1e9:.2f}B params")
 
     def _render(self, prompt: str) -> str:
+        # Pass `enable_thinking=False` to suppress Qwen3.5's `<think>...</think>`
+        # reasoning preamble — without this it consumes hundreds of tokens of
+        # internal reasoning before reaching the actual answer, blowing through
+        # MAX_OUT_TOKENS. The flag is a no-op on tokenizers that don't support
+        # it (Gemma 4), so this is safe across both architectures.
         try:
             return self.tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt}],
                 add_generation_prompt=True, tokenize=False,
+                enable_thinking=False,
             )
+        except TypeError:
+            # Older tokenizers don't accept enable_thinking — fall back.
+            try:
+                return self.tokenizer.apply_chat_template(
+                    [{"role": "user", "content": prompt}],
+                    add_generation_prompt=True, tokenize=False,
+                )
+            except (AttributeError, ValueError):
+                return prompt
         except (AttributeError, ValueError):
             return prompt
 

@@ -28,6 +28,7 @@ from runners import (  # noqa: E402
     EvalItem,
     GeminiFewShotRunner,
     GeminiZeroShotRunner,
+    HFTransformersRunner,
     MLXLoRARunner,
     estimate_gemini_cost,
 )
@@ -37,39 +38,66 @@ EVAL_SET = REPO / "data" / "eval_set.parquet"
 FT_CORPUS = REPO / "data" / "ft_corpus.parquet"
 OUT_PARQUET = REPO / "results" / "predictions.parquet"
 
-# C1a/C1b use the MERGED + MLX-converted models (Stage 3.5 → mlx_lm convert)
-# rather than the raw PEFT/HF adapters. The QLoRA adapter is in HF/PEFT format
-# and cannot be loaded as an `adapter_path` by mlx_lm. The conversion path is:
-#   EC2:  scripts/merge_adapter.py --base <hf-base> --adapter <peft-adapter>
-#                                  --merged-out <merged-hf>
-#   M5:   python -m mlx_lm convert --hf-path <merged-hf> --mlx-path <mlx-out>
-#                                  -q --q-bits 4 --q-group-size 64
-# The resulting mlx-out is loaded directly (no adapter_path).
+# C1a/C1b are FT-SLM conditions. Backend is dispatched by INFERENCE_BACKEND
+# env var (or --backend CLI flag):
+#   "mlx" (default) → load MLX 4-bit dir on Apple Silicon (M5).
+#   "hf"            → load merged HF dir in bf16 on NVIDIA GPU (EC2 / cloud).
+# The merged HF dir is the source for both — `mlx_lm convert` consumes it
+# to produce the MLX dir for M5, while HF/transformers loads the same dir
+# directly on the EC2 L40S.
+#
+# The §6.4 universal-metric implication is documented in eval-design §3.1:
+# latency/TTFT/tokens-per-sec reflect whichever device actually runs the
+# eval, so reports should call out the inference backend explicitly.
 CONDITIONS = {
-    "C1a": ("gemma-FT",  REPO / "adapters/gemma4-e4b-upsc-v1-mlx",  None),
-    "C1b": ("qwen-FT",   REPO / "adapters/qwen35-4b-upsc-v1-mlx",   None),
-    "C2":  ("gemini-zs", "gemini-3-flash", None),
-    "C3":  ("gemini-fs", "gemini-3-flash", None),
+    # condition: (short, mlx_path, hf_path, model_or_api)
+    "C1a": ("gemma-FT",
+            REPO / "adapters/gemma4-e4b-upsc-v1-mlx",
+            REPO / "adapters/gemma4-e4b-upsc-v1-merged"),
+    "C1b": ("qwen-FT",
+            REPO / "adapters/qwen35-4b-upsc-v1-mlx",
+            REPO / "adapters/qwen35-4b-upsc-v1-merged"),
+    "C2":  ("gemini-zs", None, None),
+    "C3":  ("gemini-fs", None, None),
 }
+GEMINI_MODEL = "gemini-3-flash"
 
 BUDGET_USD_PER_CONDITION = 25.0
 
 
-def _build_runner(condition: str):
-    short, model_or_path, _adapter = CONDITIONS[condition]
+def _build_runner(condition: str, backend: str):
+    """Dispatch the right runner for `condition` + `backend`.
+
+    backend ∈ {"mlx", "hf"} controls C1a/C1b loading:
+      mlx → MLXLoRARunner against the MLX-converted dir (M5 / Apple Silicon)
+      hf  → HFTransformersRunner against the merged HF dir (NVIDIA GPU)
+    C2/C3 are unaffected — Gemini API calls work the same regardless of where
+    this script runs.
+    """
+    spec = CONDITIONS[condition]
+    short = spec[0]
     if condition in ("C1a", "C1b"):
-        merged_path = model_or_path
-        if not merged_path.exists():
-            raise FileNotFoundError(
-                f"{condition} expects merged MLX model at {merged_path} (does not exist). "
-                f"Run scripts/merge_adapter.py on EC2 then `mlx_lm convert` on the M5 "
-                f"to produce it (see Makefile / merge_adapter.py docstring)."
-            )
-        return MLXLoRARunner(base=str(merged_path), adapter=None), f"{short}@{merged_path.name}"
+        _, mlx_path, hf_path = spec
+        if backend == "mlx":
+            if not mlx_path.exists():
+                raise FileNotFoundError(
+                    f"{condition} (backend=mlx) expects MLX dir at {mlx_path}. "
+                    f"Run `python -m mlx_lm convert --hf-path {hf_path} --mlx-path {mlx_path} "
+                    f"-q --q-bits 4 --q-group-size 64` to produce it."
+                )
+            return MLXLoRARunner(base=str(mlx_path), adapter=None), f"{short}@mlx:{mlx_path.name}"
+        if backend == "hf":
+            if not hf_path.exists():
+                raise FileNotFoundError(
+                    f"{condition} (backend=hf) expects merged HF dir at {hf_path}. "
+                    f"Run scripts/merge_adapter.py on a CUDA host to produce it."
+                )
+            return HFTransformersRunner(hf_path=str(hf_path)), f"{short}@hf:{hf_path.name}"
+        raise ValueError(f"unknown backend: {backend!r} (expected 'mlx' or 'hf')")
     if condition == "C2":
-        return GeminiZeroShotRunner(model=model_or_path), f"{short}@{model_or_path}"
+        return GeminiZeroShotRunner(model=GEMINI_MODEL), f"{short}@{GEMINI_MODEL}"
     if condition == "C3":
-        return GeminiFewShotRunner(ft_corpus_path=FT_CORPUS, model=model_or_path), f"{short}@{model_or_path}"
+        return GeminiFewShotRunner(ft_corpus_path=FT_CORPUS, model=GEMINI_MODEL), f"{short}@{GEMINI_MODEL}"
     raise ValueError(condition)
 
 
@@ -152,6 +180,14 @@ def main() -> int:
     # auth-key issues, model not-loaded, etc., before we burn the entire eval.
     ap.add_argument("--max-consecutive-errors", type=int, default=20,
                     help="abort the run after this many consecutive errors")
+    # FT-SLM backend dispatch — see _build_runner / CONDITIONS docstring.
+    # Default falls back to the INFERENCE_BACKEND env var so Makefile targets
+    # don't need to know which device they're on.
+    import os as _os
+    ap.add_argument("--backend", choices=("mlx", "hf"),
+                    default=_os.getenv("INFERENCE_BACKEND", "mlx"),
+                    help="C1a/C1b loader: mlx (M5/Apple) or hf (NVIDIA GPU). "
+                         "Default from $INFERENCE_BACKEND or 'mlx'.")
     args = ap.parse_args()
 
     if not EVAL_SET.exists():
@@ -191,8 +227,9 @@ def main() -> int:
     print(f"Condition: {args.condition}  run_id: {args.run_id}")
     print(f"Pending:   {len(work):,} prediction rows  (skipped {len(done):,} already done)\n")
 
-    runner, model_version = _build_runner(args.condition)
+    runner, model_version = _build_runner(args.condition, args.backend)
     shard = _shard_path(args.condition, args.run_id)
+    print(f"Backend:   {args.backend}")
     print(f"Shard:     {shard}")
 
     buffer: list[dict] = []

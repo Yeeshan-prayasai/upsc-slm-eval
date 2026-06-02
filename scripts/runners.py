@@ -378,6 +378,115 @@ class MLXLoRARunner:
         return _parse_confidence(p.raw)
 
 
+class HFTransformersRunner:
+    """C1a/C1b on EC2 (NVIDIA GPU) — loads the merged HF model in bf16 via
+    `transformers.AutoModelForCausalLM` and generates with greedy decoding.
+
+    This is the EC2-side counterpart to MLXLoRARunner (which targets M5 with
+    MLX 4-bit). The merged HF dir was produced by scripts/merge_adapter.py
+    (PEFT adapter folded into base weights, saved as safetensors). No PEFT
+    wrapper at inference time — just plain transformers.
+
+    Streaming generation captures TTFT (time-to-first-token) by yielding
+    each token as it's produced; we measure `time.perf_counter()` deltas
+    against the initial `generate` call start.
+    """
+
+    def __init__(self, hf_path: str):
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        self._torch = torch
+        print(f"[hf-runner] loading {hf_path} in bf16 ...")
+        self.tokenizer = AutoTokenizer.from_pretrained(hf_path)
+        # Prefer flash-attention if available; transformers picks sdpa otherwise.
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                hf_path,
+                dtype=torch.bfloat16,
+                device_map="auto",
+                attn_implementation="sdpa",
+            )
+        except (TypeError, ValueError):
+            # Older transformers versions used `torch_dtype` instead of `dtype`.
+            self.model = AutoModelForCausalLM.from_pretrained(
+                hf_path,
+                torch_dtype=torch.bfloat16,
+                device_map="auto",
+            )
+        self.model.eval()
+        # Use the tokenizer's EOS as pad if pad_token_id is missing.
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+        print(f"[hf-runner] loaded: {type(self.model).__name__}, "
+              f"{sum(p.numel() for p in self.model.parameters()) / 1e9:.2f}B params")
+
+    def _render(self, prompt: str) -> str:
+        try:
+            return self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                add_generation_prompt=True, tokenize=False,
+            )
+        except (AttributeError, ValueError):
+            return prompt
+
+    def _generate(self, prompt: str, max_tokens: int) -> Prediction:
+        from transformers import TextIteratorStreamer
+        from threading import Thread
+
+        # Include chat-template render time in latency_ms (parity with the
+        # other runners; symmetric to how the Gemini runner counts every
+        # millisecond from the moment we hand the prompt over).
+        t0 = time.perf_counter()
+        full = self._render(prompt)
+        enc = self.tokenizer(full, return_tensors="pt").to(self.model.device)
+        in_tokens = int(enc["input_ids"].shape[-1])
+
+        streamer = TextIteratorStreamer(
+            self.tokenizer, skip_prompt=True, skip_special_tokens=True,
+        )
+        gen_kwargs = dict(
+            **enc,
+            max_new_tokens=max_tokens,
+            do_sample=False,           # greedy / temperature=0 ⇒ deterministic
+            num_beams=1,
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+            streamer=streamer,
+            use_cache=True,
+        )
+        thread = Thread(target=self.model.generate, kwargs=gen_kwargs)
+        thread.start()
+
+        out_parts: list[str] = []
+        ttft_ms = 0
+        for token_text in streamer:
+            if ttft_ms == 0 and token_text:
+                ttft_ms = int((time.perf_counter() - t0) * 1000)
+            out_parts.append(token_text)
+        thread.join()
+
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        raw = "".join(out_parts)
+        # Output-token count via re-tokenize (avoids hooking into generate's
+        # internal token list which streamer doesn't expose).
+        out_tokens = int(len(self.tokenizer(raw, return_tensors="pt")["input_ids"][0])) if raw else 0
+        return Prediction(raw=raw, parsed={},
+                          latency_ms=latency_ms, ttft_ms=ttft_ms,
+                          input_tokens=in_tokens, output_tokens=out_tokens)
+
+    def predict(self, item: EvalItem, inference_task: str | None = None) -> Prediction:
+        task = inference_task or item.task
+        pred = self._generate(build_prompt(item, task), MAX_OUT_TOKENS[task])
+        pred.parsed = parse_output(task, pred.raw)
+        return pred
+
+    def confidence(self, item: EvalItem, letter: str) -> int | None:
+        """Pass-2 verbal confidence elicitation — see MLXLoRARunner.confidence
+        docstring. Returns 0-100 int or None on parse failure."""
+        p = self._generate(build_confidence_prompt(item, letter), max_tokens=16)
+        return _parse_confidence(p.raw)
+
+
 class GeminiRunner:
     """C2/C3 base. Subclasses inject few-shot exemplars (or none)."""
 

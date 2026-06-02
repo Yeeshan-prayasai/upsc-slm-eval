@@ -47,7 +47,11 @@ GEMINI_FLASH_IN_USD_PER_M = 0.50
 GEMINI_FLASH_OUT_USD_PER_M = 3.00
 # Task A/B/C/E are FT-corpus tasks; F/G are production-prompt capability tests
 # reusing Task A and Task B eval items respectively (see eval-design.md §4.6/§4.7).
-MAX_OUT_TOKENS = {"A": 1024, "B": 1500, "C": 1024, "E": 1500, "F": 1500, "G": 1500}
+# Task A bumped 1024 → 1536 — Qwen3.5's Hindi explanations averaged ~1100 tokens
+# in our FT corpus, and the original 1024 cap was truncating ~30% of Hindi rows
+# mid-JSON-string. _extract_json now recovers from truncation but more headroom
+# is cheap and removes a known systematic bias against the Hindi stratum.
+MAX_OUT_TOKENS = {"A": 1536, "B": 1500, "C": 1024, "E": 1500, "F": 1500, "G": 1500}
 
 # Tasks F and G derive their eval items from A and B respectively.
 EVAL_TASK_TO_INFERENCE_TASKS = {
@@ -244,6 +248,21 @@ def build_confidence_prompt(item: EvalItem, letter: str) -> str:
 # ------------- Output parsing -------------
 
 def _extract_json(text: str) -> dict | None:
+    """Best-effort JSON recovery from possibly-truncated model output.
+
+    Strategies, in order:
+    1. Parse the full text directly.
+    2. Extract `{...}` from a markdown fence (```json ... ```).
+    3. Extract `{...}` from anywhere in the text (greedy `\\{.*\\}`).
+    4. Recover from truncated JSON (no closing `}` because generation hit
+       max_tokens mid-string). We re-quote-balance by appending `"}` for
+       common shapes and retrying.
+
+    The truncation recovery is critical for long-output cases (e.g. Qwen3.5's
+    verbose Hindi Task-A explanations that can run past 1024 tokens). Without
+    it we'd lose both the answer letter AND the full explanation; with it we
+    keep both, just slightly truncated at the explanation tail.
+    """
     text = text.strip()
     try:
         return json.loads(text)
@@ -261,6 +280,19 @@ def _extract_json(text: str) -> dict | None:
             return json.loads(m.group(0))
         except json.JSONDecodeError:
             pass
+    # Truncation recovery: find the LAST `{` start and try to balance.
+    start = text.rfind("{")
+    if start < 0:
+        return None
+    truncated = text[start:]
+    # Append progressively-aggressive closers and retry.
+    # Order: `"}` (mid-string), `}` (closed missing brace),
+    # `]}` (mid-array), `"]}` (mid-array-string), etc.
+    for closer in ('"}', '}', ']}', '"]}', '"}]}', '"}}', ']}}'):
+        try:
+            return json.loads(truncated + closer)
+        except json.JSONDecodeError:
+            continue
     return None
 
 
@@ -398,21 +430,27 @@ class HFTransformersRunner:
         self._torch = torch
         print(f"[hf-runner] loading {hf_path} in bf16 ...")
         self.tokenizer = AutoTokenizer.from_pretrained(hf_path)
-        # Prefer flash-attention if available; transformers picks sdpa otherwise.
-        try:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                hf_path,
-                dtype=torch.bfloat16,
-                device_map="auto",
-                attn_implementation="sdpa",
-            )
-        except (TypeError, ValueError):
-            # Older transformers versions used `torch_dtype` instead of `dtype`.
-            self.model = AutoModelForCausalLM.from_pretrained(
-                hf_path,
-                torch_dtype=torch.bfloat16,
-                device_map="auto",
-            )
+        # Prefer flash-attention 2 if available; falls back to sdpa, then
+        # eager. flash-attention-2 gives ~3-5× generation throughput on L40S
+        # for 4B-class models — worth probing.
+        load_kwargs = dict(dtype=torch.bfloat16, device_map="auto")
+        last_err = None
+        for attn in ("flash_attention_2", "sdpa", "eager"):
+            try:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    hf_path, attn_implementation=attn, **load_kwargs,
+                )
+                print(f"[hf-runner] attention impl = {attn}")
+                break
+            except (TypeError, ValueError, ImportError) as e:
+                last_err = e
+                # Some transformers versions used `torch_dtype` instead of `dtype`.
+                if "dtype" in str(e) or isinstance(e, TypeError):
+                    load_kwargs = {k: v for k, v in load_kwargs.items() if k != "dtype"}
+                    load_kwargs["torch_dtype"] = torch.bfloat16
+                continue
+        else:
+            raise RuntimeError(f"failed to load model with any attention impl: {last_err}")
         self.model.eval()
         # Use the tokenizer's EOS as pad if pad_token_id is missing.
         if self.tokenizer.pad_token_id is None:

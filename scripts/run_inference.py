@@ -60,7 +60,11 @@ CONDITIONS = {
     "C2":  ("gemini-zs", None, None),
     "C3":  ("gemini-fs", None, None),
 }
-GEMINI_MODEL = "gemini-3-flash"
+# Gemini model name — env-configurable so we can pin a different snapshot
+# (e.g. gemini-3.5-flash vs gemini-3-flash-preview) without code changes.
+# Default tracks the pre-registered name; runtime override via $GEMINI_MODEL.
+import os as _os_for_gemini
+GEMINI_MODEL = _os_for_gemini.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 
 BUDGET_USD_PER_CONDITION = 25.0
 

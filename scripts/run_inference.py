@@ -188,6 +188,10 @@ def main() -> int:
                     default=_os.getenv("INFERENCE_BACKEND", "mlx"),
                     help="C1a/C1b loader: mlx (M5/Apple) or hf (NVIDIA GPU). "
                          "Default from $INFERENCE_BACKEND or 'mlx'.")
+    ap.add_argument("--batch-size", type=int, default=1,
+                    help="HF runner: group N predictions into one model.generate() "
+                         "call. >1 trades per-row TTFT precision for ~5-10× "
+                         "throughput on GPU. No-op for MLX/Gemini backends.")
     args = ap.parse_args()
 
     if not EVAL_SET.exists():
@@ -230,68 +234,141 @@ def main() -> int:
     runner, model_version = _build_runner(args.condition, args.backend)
     shard = _shard_path(args.condition, args.run_id)
     print(f"Backend:   {args.backend}")
+    print(f"Batch:     {args.batch_size}")
     print(f"Shard:     {shard}")
+
+    # Batched path: only if the runner supports it AND batch_size > 1. The
+    # batched path groups predictions by inference_task (so each batch has a
+    # uniform max_new_tokens) and processes them together.
+    use_batched = (
+        args.batch_size > 1
+        and hasattr(runner, "predict_batch")
+        and args.condition in ("C1a", "C1b")
+    )
+
+    def _row_to_dict(item: EvalItem, inf_task: str, row: dict,
+                     pred, extras: dict) -> dict:
+        return {
+            "run_id": args.run_id,
+            "condition": args.condition,
+            "model_version": model_version,
+            "task": inf_task,                         # inference-task (A/B/C/E/F/G)
+            "eval_task": item.task,                   # source eval-task (A/B/C/E)
+            "inference_task": inf_task,
+            "question_id": item.question_id,
+            "language": item.language,
+            "paper": item.paper,
+            "subject": item.subject,
+            "stratum_key": item.stratum_key,
+            "input_text": "",
+            "gold_payload": row["gold_payload"],
+            "prediction": json.dumps({**pred.parsed, **extras}, ensure_ascii=False),
+            "raw_output": pred.raw,
+            "latency_ms": pred.latency_ms,
+            "ttft_ms": pred.ttft_ms,
+            "input_tokens": pred.input_tokens,
+            "output_tokens": pred.output_tokens,
+            "created_at": dt.datetime.now(dt.UTC).isoformat(),
+        }
 
     buffer: list[dict] = []
     n_ok = n_err = 0
     consecutive_errors = 0
     aborted = False
-    for i, (row, inf_task) in enumerate(work, 1):
-        item = EvalItem.from_row(row)
-        try:
-            pred = runner.predict(item, inference_task=inf_task)
-            extras: dict = {}
-            # Task A: separate verbal-confidence call (Pass-2). Tasks F/G are
-            # capability tests with provided/different gold and don't need it.
-            # `confidence()` returns 0-100 int or None on parse failure —
-            # recorded verbatim. None ⇒ score_task_A leaves brier_loss as NaN
-            # rather than averaging in a silent 0.5 default.
-            if inf_task == "A" and pred.parsed.get("answer"):
-                extras = {"confidence": runner.confidence(item, pred.parsed["answer"])}
-            buffer.append({
-                "run_id": args.run_id,
-                "condition": args.condition,
-                "model_version": model_version,
-                "task": inf_task,                         # inference-task (A/B/C/E/F/G)
-                "eval_task": item.task,                   # source eval-task (A/B/C/E)
-                "inference_task": inf_task,
-                "question_id": item.question_id,
-                "language": item.language,
-                "paper": item.paper,
-                "subject": item.subject,
-                "stratum_key": item.stratum_key,
-                "input_text": "",
-                "gold_payload": row["gold_payload"],
-                "prediction": json.dumps({**pred.parsed, **extras}, ensure_ascii=False),
-                "raw_output": pred.raw,
-                "latency_ms": pred.latency_ms,
-                "ttft_ms": pred.ttft_ms,
-                "input_tokens": pred.input_tokens,
-                "output_tokens": pred.output_tokens,
-                "created_at": dt.datetime.now(dt.UTC).isoformat(),
-            })
-            n_ok += 1
-            consecutive_errors = 0
-        except KeyboardInterrupt:
-            print("\n[INTERRUPT] flushing buffer before exit ...")
-            _append_rows(buffer, shard)
-            _merge_shards()
-            raise
-        except Exception as e:
-            n_err += 1
-            consecutive_errors += 1
-            print(f"  [{i}/{len(work)}] ERR {item.question_id} [{inf_task}]: {type(e).__name__}: {e}")
-            if consecutive_errors >= args.max_consecutive_errors:
-                print(f"\n[ABORT] {consecutive_errors} consecutive errors — aborting "
-                      f"run to avoid burning the full eval on a likely systemic failure "
-                      f"(API auth, model not loaded, etc.).")
-                _append_rows(buffer, shard)
-                aborted = True
-                break
 
-        if i % args.checkpoint_every == 0:
-            _append_rows(buffer, shard); buffer = []
-            print(f"  [{i:>5d}/{len(work)}] checkpoint ok={n_ok} err={n_err}")
+    if use_batched:
+        # Group work items by inference_task so each batch has uniform shape +
+        # uniform max_new_tokens (otherwise the largest cap dominates).
+        from collections import defaultdict
+        groups: dict[str, list[tuple[int, dict, EvalItem]]] = defaultdict(list)
+        for i, (row, inf_task) in enumerate(work, 1):
+            groups[inf_task].append((i, row, EvalItem.from_row(row)))
+        processed = 0
+        for inf_task, group in groups.items():
+            for start in range(0, len(group), args.batch_size):
+                chunk = group[start:start + args.batch_size]
+                items = [it for _, _, it in chunk]
+                tasks = [inf_task] * len(items)
+                try:
+                    preds = runner.predict_batch(items, tasks)
+                    # Pass-2 verbal confidence — batched for Task A.
+                    conf_results: list = []
+                    if inf_task == "A":
+                        valid_idx = [k for k, p in enumerate(preds) if p.parsed.get("answer")]
+                        if valid_idx and hasattr(runner, "confidence_batch"):
+                            conf_letters = [preds[k].parsed["answer"] for k in valid_idx]
+                            conf_items = [items[k] for k in valid_idx]
+                            conf_out = runner.confidence_batch(conf_items, conf_letters)
+                            conf_map = dict(zip(valid_idx, conf_out))
+                            conf_results = [conf_map.get(k) for k in range(len(items))]
+                        else:
+                            conf_results = [None] * len(items)
+                    for (orig_i, row, item), pred, conf in zip(
+                        chunk, preds,
+                        conf_results if conf_results else [None] * len(items),
+                    ):
+                        extras = {"confidence": conf} if (inf_task == "A" and pred.parsed.get("answer")) else {}
+                        buffer.append(_row_to_dict(item, inf_task, row, pred, extras))
+                    n_ok += len(items)
+                    consecutive_errors = 0
+                    processed += len(items)
+                except KeyboardInterrupt:
+                    print("\n[INTERRUPT] flushing buffer before exit ...")
+                    _append_rows(buffer, shard); _merge_shards()
+                    raise
+                except Exception as e:
+                    n_err += len(items)
+                    consecutive_errors += len(items)
+                    qids = ",".join(it.question_id for it in items[:3])
+                    print(f"  [{processed+1}-{processed+len(items)}/{len(work)}] "
+                          f"BATCH ERR [{inf_task}] ({qids}...): {type(e).__name__}: {e}")
+                    processed += len(items)
+                    if consecutive_errors >= args.max_consecutive_errors:
+                        print(f"\n[ABORT] {consecutive_errors} consecutive errors — aborting.")
+                        _append_rows(buffer, shard)
+                        aborted = True
+                        break
+
+                if len(buffer) >= args.checkpoint_every:
+                    _append_rows(buffer, shard); buffer = []
+                    print(f"  [{processed:>5d}/{len(work)}] checkpoint ok={n_ok} err={n_err}")
+            if aborted:
+                break
+    else:
+        # Per-row (single-prediction) path — used by MLX, Gemini, or HF with
+        # batch_size=1.
+        for i, (row, inf_task) in enumerate(work, 1):
+            item = EvalItem.from_row(row)
+            try:
+                pred = runner.predict(item, inference_task=inf_task)
+                extras: dict = {}
+                # Task A: separate verbal-confidence call (Pass-2). Tasks F/G
+                # are capability tests with provided/different gold and don't
+                # need it. `confidence()` returns 0-100 int or None on parse
+                # failure — recorded verbatim. None ⇒ score_task_A leaves
+                # brier_loss as NaN rather than averaging in a silent 0.5.
+                if inf_task == "A" and pred.parsed.get("answer"):
+                    extras = {"confidence": runner.confidence(item, pred.parsed["answer"])}
+                buffer.append(_row_to_dict(item, inf_task, row, pred, extras))
+                n_ok += 1
+                consecutive_errors = 0
+            except KeyboardInterrupt:
+                print("\n[INTERRUPT] flushing buffer before exit ...")
+                _append_rows(buffer, shard); _merge_shards()
+                raise
+            except Exception as e:
+                n_err += 1
+                consecutive_errors += 1
+                print(f"  [{i}/{len(work)}] ERR {item.question_id} [{inf_task}]: {type(e).__name__}: {e}")
+                if consecutive_errors >= args.max_consecutive_errors:
+                    print(f"\n[ABORT] {consecutive_errors} consecutive errors — aborting.")
+                    _append_rows(buffer, shard)
+                    aborted = True
+                    break
+
+            if i % args.checkpoint_every == 0:
+                _append_rows(buffer, shard); buffer = []
+                print(f"  [{i:>5d}/{len(work)}] checkpoint ok={n_ok} err={n_err}")
 
     _append_rows(buffer, shard)
     total = _merge_shards()

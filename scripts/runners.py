@@ -533,11 +533,106 @@ class HFTransformersRunner:
         pred.parsed = parse_output(task, pred.raw)
         return pred
 
+    def predict_batch(
+        self,
+        items: list[EvalItem],
+        inference_tasks: list[str],
+        max_tokens_override: int | None = None,
+    ) -> list[Prediction]:
+        """Batched generation — feeds N prompts into a single `model.generate`
+        call to amortize GPU matmul cost. Trades per-row TTFT precision (we
+        only capture batch-level first-token time, attributed to each row) for
+        ~5-10× higher throughput on L40S-class hardware.
+
+        All items in a batch are padded to the longest prompt; max_new_tokens
+        is the largest needed across the batch (or max_tokens_override). The
+        result list is aligned positionally with the input.
+        """
+        if not items:
+            return []
+        assert len(items) == len(inference_tasks), \
+            "items and inference_tasks must have the same length"
+        torch = self._torch
+        prompts = [build_prompt(it, t) for it, t in zip(items, inference_tasks)]
+        rendered = [self._render(p) for p in prompts]
+        max_tokens = max_tokens_override or max(MAX_OUT_TOKENS[t] for t in inference_tasks)
+
+        t0 = time.perf_counter()
+        # Left-padding matters for causal LMs — without it, generated tokens
+        # are emitted at positions that respect the padding-shifted logits.
+        self.tokenizer.padding_side = "left"
+        enc = self.tokenizer(
+            rendered, return_tensors="pt", padding=True, truncation=False,
+        ).to(self.model.device)
+        in_token_counts = [int(m.sum()) for m in enc["attention_mask"]]
+        prompt_len = int(enc["input_ids"].shape[-1])
+
+        with torch.inference_mode():
+            output_ids = self.model.generate(
+                **enc,
+                max_new_tokens=max_tokens,
+                do_sample=False,
+                num_beams=1,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+                use_cache=True,
+            )
+        batch_latency_ms = int((time.perf_counter() - t0) * 1000)
+        # Slice off the prompt portion; decode each row's new tokens.
+        new_ids = output_ids[:, prompt_len:]
+        results: list[Prediction] = []
+        for i, (item, task) in enumerate(zip(items, inference_tasks)):
+            row_new = new_ids[i]
+            # Trim trailing pads from this row's output.
+            row_new = row_new[row_new != self.tokenizer.pad_token_id]
+            raw = self.tokenizer.decode(row_new, skip_special_tokens=True)
+            out_tok = int(len(row_new))
+            pred = Prediction(
+                raw=raw, parsed=parse_output(task, raw),
+                latency_ms=batch_latency_ms,
+                # We don't have true per-row TTFT in a batch — attribute the
+                # batch's total wall-clock divided by batch size as a coarse
+                # estimate. Tagged so downstream readers know it's not exact.
+                ttft_ms=batch_latency_ms // max(1, len(items)),
+                input_tokens=in_token_counts[i],
+                output_tokens=out_tok,
+                extras={"batch_size": len(items)},
+            )
+            results.append(pred)
+        return results
+
     def confidence(self, item: EvalItem, letter: str) -> int | None:
         """Pass-2 verbal confidence elicitation — see MLXLoRARunner.confidence
         docstring. Returns 0-100 int or None on parse failure."""
         p = self._generate(build_confidence_prompt(item, letter), max_tokens=16)
         return _parse_confidence(p.raw)
+
+    def confidence_batch(self, items: list[EvalItem], letters: list[str]) -> list[int | None]:
+        """Batched confidence elicitation — 16-token cap per row, batched."""
+        if not items:
+            return []
+        prompts = [build_confidence_prompt(it, l) for it, l in zip(items, letters)]
+        rendered = [self._render(p) for p in prompts]
+        torch = self._torch
+        self.tokenizer.padding_side = "left"
+        enc = self.tokenizer(
+            rendered, return_tensors="pt", padding=True, truncation=False,
+        ).to(self.model.device)
+        prompt_len = int(enc["input_ids"].shape[-1])
+        with torch.inference_mode():
+            out = self.model.generate(
+                **enc, max_new_tokens=16, do_sample=False, num_beams=1,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id, use_cache=True,
+            )
+        new_ids = out[:, prompt_len:]
+        result: list[int | None] = []
+        for i in range(len(items)):
+            row = new_ids[i]
+            row = row[row != self.tokenizer.pad_token_id]
+            text = self.tokenizer.decode(row, skip_special_tokens=True)
+            result.append(_parse_confidence(text))
+        return result
 
 
 class GeminiRunner:

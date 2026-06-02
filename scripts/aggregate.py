@@ -28,6 +28,9 @@ NON_METRIC = {
     "run_id", "condition", "question_id", "task", "language", "paper",
     "subject", "stratum_key", "predicted_letter", "correct_letter",
     "pred_score", "gold_score", "max_score",
+    # Universal columns aggregated separately by _aggregate_universal()
+    "latency_ms", "ttft_ms", "input_tokens", "output_tokens",
+    "tokens_per_sec", "cost_usd", "format_valid",
 }
 
 
@@ -220,7 +223,7 @@ def _aggregate_scalars(df: pd.DataFrame) -> pd.DataFrame:
 def _aggregate_special(df: pd.DataFrame) -> pd.DataFrame:
     """Aggregation-level metrics that aren't per-row scalars."""
     rows = []
-    # Task A: ECE + Brier Skill Score per condition
+    # Task A: ECE + Brier Skill Score + Position bias + Refusal rate per condition.
     a = df[df["task"] == "A"]
     for cond, sub in a.groupby("condition"):
         conf = sub["confidence_prob"].astype(float).values
@@ -228,27 +231,67 @@ def _aggregate_special(df: pd.DataFrame) -> pd.DataFrame:
         ece = _ece(conf, cor)
         bss = _brier_skill(sub["brier_loss"].astype(float).values, cor)
         chi2, p_pos = _position_bias(sub["predicted_letter"])
-        rows.append({
-            "condition": cond, "task": "A", "language": "all",
-            "metric": "ece_15bin", "n": int(len(sub)),
-            "mean": ece, "ci_lo": np.nan, "ci_hi": np.nan,
-        })
-        rows.append({
-            "condition": cond, "task": "A", "language": "all",
-            "metric": "brier_skill_score", "n": int(len(sub)),
-            "mean": bss, "ci_lo": np.nan, "ci_hi": np.nan,
-        })
-        rows.append({
-            "condition": cond, "task": "A", "language": "all",
-            "metric": "position_bias_chi2", "n": int(len(sub)),
-            "mean": chi2, "ci_lo": np.nan, "ci_hi": np.nan,
-        })
-        rows.append({
-            "condition": cond, "task": "A", "language": "all",
-            "metric": "position_bias_p_value", "n": int(len(sub)),
-            "mean": p_pos, "ci_lo": np.nan, "ci_hi": np.nan,
-        })
+        refusal_rate = (float(sub["refusal"].mean()) if "refusal" in sub.columns
+                        else np.nan)
+        for m_name, m_val in (
+            ("ece_15bin", ece), ("brier_skill_score", bss),
+            ("position_bias_chi2", chi2), ("position_bias_p_value", p_pos),
+            ("refusal_rate", refusal_rate),
+        ):
+            rows.append({
+                "condition": cond, "task": "A", "language": "all",
+                "metric": m_name, "n": int(len(sub)),
+                "mean": m_val, "ci_lo": np.nan, "ci_hi": np.nan,
+            })
 
+    # Task C: QWK / Spearman ρ / Pearson r / MAE / variance ratio per condition.
+    # These need the full row set (not per-row scalars) — promote from extras
+    # so the renderer can read everything from aggregate.parquet.
+    c_rank = _task_c_rank(df)
+    for cond, m in c_rank.items():
+        for key in ("qwk", "spearman_rho", "pearson_r", "score_mae",
+                    "score_variance_ratio"):
+            val = m.get(key)
+            if val is None:
+                continue
+            rows.append({
+                "condition": cond, "task": "C", "language": "all",
+                "metric": key, "n": int(m.get("n") or 0),
+                "mean": float(val) if val == val else np.nan,
+                "ci_lo": np.nan, "ci_hi": np.nan,
+            })
+
+    return pd.DataFrame(rows)
+
+
+def _aggregate_universal(df: pd.DataFrame) -> pd.DataFrame:
+    """§6.4 universal metrics — per-condition latency percentiles, throughput,
+    cost, and format-validity rate. Latency is reported across all tasks/items
+    for that condition (single-row table per condition, language='all').
+    """
+    if "latency_ms" not in df.columns:
+        return pd.DataFrame()
+    rows = []
+    for cond, sub in df.groupby("condition"):
+        lat = sub["latency_ms"].astype(float).dropna().values
+        ttft = sub["ttft_ms"].astype(float).dropna().values
+        tps = sub["tokens_per_sec"].astype(float).dropna().values
+        cost = sub["cost_usd"].astype(float).dropna().values
+        fv = sub["format_valid"].astype(float).dropna().values
+        for m_name, vals, agg in (
+            ("latency_p50_ms", lat, lambda v: float(np.percentile(v, 50)) if len(v) else np.nan),
+            ("latency_p95_ms", lat, lambda v: float(np.percentile(v, 95)) if len(v) else np.nan),
+            ("latency_p99_ms", lat, lambda v: float(np.percentile(v, 99)) if len(v) else np.nan),
+            ("ttft_p50_ms",    ttft, lambda v: float(np.percentile(v, 50)) if len(v) else np.nan),
+            ("tokens_per_sec_mean", tps, lambda v: float(np.mean(v)) if len(v) else np.nan),
+            ("cost_per_query_usd", cost, lambda v: float(np.mean(v)) if len(v) else np.nan),
+            ("format_validity_rate", fv, lambda v: float(np.mean(v)) if len(v) else np.nan),
+        ):
+            rows.append({
+                "condition": cond, "task": "universal", "language": "all",
+                "metric": m_name, "n": int(len(vals)),
+                "mean": agg(vals), "ci_lo": np.nan, "ci_hi": np.nan,
+            })
     return pd.DataFrame(rows)
 
 
@@ -266,7 +309,8 @@ def main() -> int:
 
     scalar = _aggregate_scalars(df)
     special = _aggregate_special(df)
-    agg = pd.concat([scalar, special], ignore_index=True)
+    universal = _aggregate_universal(df)
+    agg = pd.concat([scalar, special, universal], ignore_index=True)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     agg.to_parquet(args.out, index=False, compression="snappy")

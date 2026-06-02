@@ -33,6 +33,41 @@ REPO = Path(__file__).resolve().parent.parent
 PREDICTIONS = REPO / "results" / "predictions.parquet"
 OUT = REPO / "results" / "scores_tier1.parquet"
 UPSC_FACTS = REPO / "data" / "upsc_facts.json"
+DIMENSION_KEYWORDS = REPO / "data" / "dimension_keywords.json"
+
+# Per-1M-token Gemini-3-Flash list pricing (USD). Same constants as
+# scripts/runners.estimate_gemini_cost; replicated here to avoid an import cycle.
+GEMINI_FLASH_IN_USD_PER_M = 0.50
+GEMINI_FLASH_OUT_USD_PER_M = 3.00
+
+
+def _cost_usd(condition: str, in_tokens: int, out_tokens: int) -> float:
+    """Marginal $-cost per query. Local FT-SLMs (C1a/C1b) are $0; Gemini
+    conditions are billed at the published per-token rate."""
+    if condition in ("C1a", "C1b"):
+        return 0.0
+    return ((in_tokens or 0) / 1_000_000) * GEMINI_FLASH_IN_USD_PER_M \
+         + ((out_tokens or 0) / 1_000_000) * GEMINI_FLASH_OUT_USD_PER_M
+
+
+def _format_valid(task: str, parsed: dict, metrics: dict) -> int:
+    """Per-row format-validity flag — did the parser extract a usable shape?
+    A is valid iff a letter parsed; C/F/G expose explicit `schema_valid`; B/E
+    are valid iff the JSON parsed at all (no _parse_error)."""
+    if task == "A":
+        return int(not metrics.get("format_fail", 0))
+    if task in ("C", "F", "G"):
+        return int(metrics.get("schema_valid", 0))
+    # B/E: implicit — parsed must not carry the _parse_error sentinel and at
+    # least one of the expected keys must be non-empty.
+    if parsed.get("_parse_error"):
+        return 0
+    if task == "B":
+        return int(bool((parsed.get("answer") or "").strip()))
+    if task == "E":
+        return int(bool((parsed.get("prelims_info") or "").strip())
+                   or bool((parsed.get("mains_info") or "").strip()))
+    return 1
 
 
 # ---------- shared scorers (lazy-loaded once) ----------
@@ -40,6 +75,7 @@ UPSC_FACTS = REPO / "data" / "upsc_facts.json"
 _nlp = None
 _rouge = None
 _facts: dict | None = None
+_dimensions: dict[str, list[str]] | None = None
 
 
 def _spacy():
@@ -63,6 +99,88 @@ def _load_facts() -> dict:
     if _facts is None:
         _facts = json.loads(UPSC_FACTS.read_text())
     return _facts
+
+
+def _load_dimensions() -> dict[str, list[str]]:
+    """Load the PESEE dimension lexicon (Task G dimension coverage)."""
+    global _dimensions
+    if _dimensions is None:
+        raw = json.loads(DIMENSION_KEYWORDS.read_text())
+        _dimensions = {k: [w.lower() for w in v] for k, v in raw.items()
+                       if not k.startswith("_") and isinstance(v, list)}
+    return _dimensions
+
+
+def _dimensions_touched(text: str) -> set[str]:
+    """Return the subset of PESEE dimensions whose lexicon hits at least one
+    whole-word match in the lowercased text."""
+    if not text:
+        return set()
+    lex = _load_dimensions()
+    low = text.lower()
+    touched = set()
+    for dim, words in lex.items():
+        for w in words:
+            # Whole-word match; allow multi-word phrases (no word-boundary lib needed).
+            if re.search(rf"(?<![\w]){re.escape(w)}(?![\w])", low):
+                touched.add(dim)
+                break
+    return touched
+
+
+# UPSC GS subject → PESEE dimension proxy. Used as a weak Task-E
+# "subject-tag accuracy" surrogate (eval-design §6.3): does the generated
+# mains_info mention keywords associated with the gold subject's dimension?
+# Engineered metric; flagged as exploratory in the report.
+_SUBJECT_TO_DIMENSION = {
+    "polity": "political", "governance": "political", "constitution": "political",
+    "ir": "international", "international relations": "international",
+    "economy": "economic", "economics": "economic",
+    "society": "social", "social justice": "social",
+    "environment": "environmental", "ecology": "environmental",
+    "ethics": "ethical",
+}
+
+
+def _subject_tag_acc(pred_text: str, gold_subject: str,
+                     gold_text: str = "") -> float:
+    """Weak Task E 'subject-tag accuracy' proxy via PESEE dimension overlap.
+
+    Two-tier resolution of the "gold subject":
+    1. If the eval row has an explicit `subject` (e.g. Polity, Economy)
+       and it maps to a PESEE dimension, that's the gold dimension.
+    2. Otherwise (e.g. snapshot rows with `subject = 'UNTAGGED'`), infer
+       the gold dimension from the gold mains_info itself: pick the single
+       dominant PESEE dimension by lexicon hit count.
+
+    Returns 1.0 if pred mains_info touches the gold dimension, 0.0 if not,
+    NaN only when neither path yields a dimension (no gold text + no mapping).
+    """
+    dim: str | None = None
+    if gold_subject:
+        key = gold_subject.lower().strip()
+        if key != "untagged":
+            dim = _SUBJECT_TO_DIMENSION.get(key)
+            if dim is None:
+                for k, v in _SUBJECT_TO_DIMENSION.items():
+                    if k in key:
+                        dim = v
+                        break
+    if dim is None and gold_text:
+        # Dominant-dimension fallback. Count whole-word hits per dimension;
+        # pick the argmax. Tie-break is dict-insertion order (deterministic).
+        lex = _load_dimensions()
+        low = gold_text.lower()
+        best, best_n = None, 0
+        for d, words in lex.items():
+            n = sum(1 for w in words
+                    if re.search(rf"(?<![\w]){re.escape(w)}(?![\w])", low))
+            if n > best_n:
+                best, best_n = d, n
+        dim = best
+    if dim is None:
+        return float("nan")
+    return 1.0 if dim in _dimensions_touched(pred_text) else 0.0
 
 
 # ---------- generic helpers ----------
@@ -167,6 +285,29 @@ REASONING_MARKERS = (
     r"क्योंकि|इसलिए|परंतु|लेकिन|यदि|तब)\b"
 )
 
+# Bilingual abstention markers — used to distinguish Task A abstention
+# ("model said it cannot answer") from format failure ("model emitted garbage").
+# Refusal counts as "abstain" (neg-mark = 0) at the rubric level; format failure
+# is a broken prediction. We detect both then keep them in separate columns.
+REFUSAL_MARKERS = re.compile(
+    r"\b(cannot answer|can'?t answer|i (don'?t|do not) know|"
+    r"insufficient (information|context)|unable to (answer|determine)|"
+    r"no answer|none of the above|skip(?:ping)?|"
+    r"मुझे नहीं पता|"        # मुझे नहीं पता
+    r"जानकारी वसंख|"               # जानकारी असंख
+    r"असमर्थ|"                                          # असमर्थ
+    r"उत्तर नहीं मालूम)\b",  # उत्तर नहीं मालूम
+    flags=re.IGNORECASE,
+)
+
+
+def _is_refusal(raw: str, parsed: dict) -> int:
+    """Per-row refusal flag. Distinct from format_fail: refusal is a model
+    that *spoke* (parsed JSON or said something) but declined to answer; format
+    failure is the parser couldn't extract a usable shape."""
+    text = (raw or "") + " " + json.dumps(parsed, ensure_ascii=False)
+    return int(bool(REFUSAL_MARKERS.search(text)))
+
 
 def _distractor_coverage(explanation: str, options: dict | list, correct: str) -> float:
     """Fraction of wrong options addressed in the explanation."""
@@ -213,6 +354,7 @@ def score_task_A(row: dict, gold: dict, pred: dict) -> dict:
     pred_letter = pred_letter[:1] if pred_letter else ""
     format_fail = pred_letter not in {"A", "B", "C", "D"}
     is_correct = (not format_fail) and (pred_letter == correct_letter)
+    refusal = _is_refusal(row.get("raw_output") or "", pred)
 
     paper = (row.get("paper") or "").lower()
     if paper == "csat":
@@ -252,6 +394,7 @@ def score_task_A(row: dict, gold: dict, pred: dict) -> dict:
     return {
         "is_correct": int(is_correct),
         "format_fail": int(format_fail),
+        "refusal": int(refusal),
         "predicted_letter": pred_letter if not format_fail else "",
         "correct_letter": correct_letter,
         "upsc_neg_marking_score": neg,
@@ -483,6 +626,25 @@ def score_task_C(row: dict, gold: dict, pred: dict) -> dict:
     s_f1 = _f1(_lemma_set_en(s_pred), _lemma_set_en(s_gold))
     i_f1 = _f1(_lemma_set_en(i_pred), _lemma_set_en(i_gold))
 
+    # Per-section improvements lemma-F1 (intro / body / conclusion). Task C
+    # rubric organizes improvement bullets by Mains section; per-section F1
+    # captures whether the model identifies the SAME section needing work,
+    # not just the set of words.
+    def _section_lemmas(imp, key: str) -> set[str]:
+        if not isinstance(imp, dict):
+            return set()
+        v = imp.get(key)
+        text = "\n".join(str(s) for s in v) if isinstance(v, list) else (str(v) if v else "")
+        return _lemma_set_en(text)
+    i_pred_imp = pred.get("improvements")
+    i_gold_imp = gold.get("improvements")
+    intro_f1 = _f1(_section_lemmas(i_pred_imp, "intro"),
+                   _section_lemmas(i_gold_imp, "intro"))
+    body_f1 = _f1(_section_lemmas(i_pred_imp, "body"),
+                  _section_lemmas(i_gold_imp, "body"))
+    conc_f1 = _f1(_section_lemmas(i_pred_imp, "conclusion"),
+                  _section_lemmas(i_gold_imp, "conclusion"))
+
     s_pred_n = len(pred.get("strengths") or []) if isinstance(pred.get("strengths"), list) else 0
     s_gold_n = len(gold.get("strengths") or []) if isinstance(gold.get("strengths"), list) else 0
     s_count_adh = max(0.0, 1.0 - abs(s_pred_n - s_gold_n) / max(1, s_gold_n))
@@ -499,6 +661,9 @@ def score_task_C(row: dict, gold: dict, pred: dict) -> dict:
         "schema_valid": schema_valid,
         "strengths_token_f1": s_f1,
         "improvements_token_f1": i_f1,
+        "improvements_intro_token_f1": intro_f1,
+        "improvements_body_token_f1": body_f1,
+        "improvements_conclusion_token_f1": conc_f1,
         "strengths_count_adherence": s_count_adh,
         "improvements_count_adherence": i_count_adh,
     }
@@ -579,6 +744,172 @@ def score_task_E(row: dict, gold: dict, pred: dict) -> dict:
         "fact_lookup_precision": _fact_lookup_precision(m_pred + "\n" + p_pred),
         "prelims_word_count": _word_count(p_pred),
         "mains_word_count": cand_toks,
+        # Weak subject-tag proxy via PESEE dimension lookup. Falls back to
+        # gold-mains_info dominant-dimension when row.subject = 'UNTAGGED'.
+        "subject_tag_acc": _subject_tag_acc(
+            m_pred, row.get("subject") or "", m_gold,
+        ),
+    }
+
+
+# ---------- Task F (production-prompt Prelims explanation) ----------
+
+DIRECTIVE_VERBS = {
+    # high-density (causal/contrastive) — "analyze", "evaluate", "critically", "examine"
+    "high": ("analyze", "analyse", "evaluate", "critically", "examine", "assess"),
+    # low-density (descriptive) — "describe", "list", "outline", "discuss"
+    "low":  ("describe", "list", "outline", "discuss", "comment", "explain"),
+}
+
+
+def _devanagari_share(text: str) -> float:
+    letters = [c for c in (text or "") if c.isalpha()]
+    if not letters:
+        return 0.0
+    dev = sum(1 for c in letters if "DEVANAGARI" in unicodedata.name(c, ""))
+    return dev / len(letters)
+
+
+def _pick_F_branch(pred: dict, language: str) -> str:
+    """Task F output is {english, hindi}. Score against the language-matched
+    branch; fall back to whichever branch is non-empty if model produced only
+    one (format_warn fallback in parse_output).
+    """
+    en = (pred.get("english") or "").strip()
+    hi = (pred.get("hindi") or "").strip()
+    if language == "hi" and hi:
+        return hi
+    if language == "en" and en:
+        return en
+    return en or hi
+
+
+def score_task_F(row: dict, gold: dict, pred: dict) -> dict:
+    """Task F — production-prompt Prelims Explanation Generation.
+
+    Gold reference is the Task-A `explanation` field (always English in our
+    eval set). We score the English branch against gold for both en + hi rows,
+    and additionally report Devanagari-purity of the Hindi branch (no gold
+    Hindi reference exists; this is format compliance only).
+    """
+    language = row.get("language") or "en"
+    en_pred = (pred.get("english") or "").strip()
+    hi_pred = (pred.get("hindi") or "").strip()
+    expl_gold = (gold.get("explanation") or "").strip()
+    correct_letter = (gold.get("correct_option") or "").strip().upper()
+
+    schema_valid = int(bool(en_pred) and bool(hi_pred) and not pred.get("_parse_error"))
+
+    # Score the language-matched branch vs gold (gold is English-only in this
+    # eval set — see eval_set inspection notes). For Hindi rows we keep the
+    # English branch for cross-row BERTScore but report hi_devanagari_share
+    # separately as a bilingual format-compliance signal.
+    branch = _pick_F_branch(pred, language)
+
+    entity_f1 = 0.0
+    if branch and expl_gold:
+        ents_p = _entities_en(branch)
+        ents_g = _entities_en(expl_gold)
+        if ents_p or ents_g:
+            inter = ents_p & ents_g
+            p = len(inter) / len(ents_p) if ents_p else 0.0
+            r = len(inter) / len(ents_g) if ents_g else 0.0
+            entity_f1 = (2 * p * r / (p + r)) if (p + r) else 0.0
+
+    markers = re.findall(REASONING_MARKERS, branch, flags=re.IGNORECASE)
+    wc_pred = max(_word_count(branch), 1)
+    reasoning_density = 100.0 * len(markers) / wc_pred
+
+    target_wc = max(_word_count(expl_gold), 1)
+    wc_adherence = max(0.0, 1.0 - abs(_word_count(branch) - target_wc) / target_wc)
+
+    return {
+        "schema_valid": schema_valid,
+        "format_fail": int(not schema_valid),
+        "explanation_entity_f1": entity_f1,
+        "distractor_coverage": _distractor_coverage(
+            branch, gold.get("options"), correct_letter
+        ),
+        "reasoning_step_density_per100w": reasoning_density,
+        "citation_accuracy": _citation_accuracy(branch),
+        "fact_lookup_precision": _fact_lookup_precision(branch),
+        "word_count_adherence": wc_adherence,
+        "hindi_code_mixing_rate": (
+            (1.0 - _devanagari_share(hi_pred)) if hi_pred else np.nan
+        ),
+        "hindi_devanagari_share": _devanagari_share(hi_pred) if hi_pred else np.nan,
+        "english_word_count": _word_count(en_pred),
+        "hindi_word_count": _word_count(hi_pred),
+    }
+
+
+# ---------- Task G (production-prompt Mains model-answer) ----------
+
+def _directive_class(question: str) -> str:
+    """Classify the directive verb in the Mains question. Returns 'high',
+    'low', or 'unknown' for the directive-density expectation."""
+    q = (question or "").lower()
+    for cls in ("high", "low"):
+        for v in DIRECTIVE_VERBS[cls]:
+            if re.search(rf"\b{v}\b", q):
+                return cls
+    return "unknown"
+
+
+def _causal_marker_density(text: str) -> float:
+    """Causal/contrastive marker count per 100 words. Subset of REASONING_MARKERS
+    that signals analysis depth (per eval-design §4.7)."""
+    if not text:
+        return 0.0
+    pat = r"\b(because|therefore|hence|thus|since|however|whereas|although|" \
+          r"क्योंकि|इसलिए|परंतु|लेकिन)\b"
+    hits = re.findall(pat, text, flags=re.IGNORECASE)
+    return 100.0 * len(hits) / max(1, _word_count(text))
+
+
+def score_task_G(row: dict, gold: dict, pred: dict) -> dict:
+    """Task G — production-prompt Mains model-answer.
+
+    Carries over all Task-B Tier-1 metrics (word/sentence/paragraph adherence,
+    Entity-F1, date/number F1, MATTR, FK grade, n-gram repetition, fact lookup,
+    Hindi code mixing) plus two engineered metrics from eval-design §4.7:
+    dimension-keyword coverage and directive-conditioned discourse density.
+    """
+    # Reuse Task B's metrics directly — gold field shapes are identical.
+    base = score_task_B(row, gold, pred)
+
+    cand = (pred.get("answer") or "").strip()
+    ref = (gold.get("model_answer") or "").strip()
+    question = (gold.get("question") or "").strip()
+
+    # Dimension-keyword coverage (PESEE lexicon)
+    touched_pred = _dimensions_touched(cand)
+    touched_ref = _dimensions_touched(ref)
+    if touched_ref:
+        dim_coverage = len(touched_pred & touched_ref) / len(touched_ref)
+    else:
+        # Gold covers no PESEE dimensions; vacuously 1.0 if pred also covers none,
+        # else 0.0 (pred over-extends beyond what gold required).
+        dim_coverage = 1.0 if not touched_pred else 0.0
+
+    # Directive-conditioned discourse density (exploratory).
+    # Score = density(generated) / density(gold), clipped — closer to 1.0 is
+    # better calibrated to the directive expectation.
+    d_pred = _causal_marker_density(cand)
+    d_gold = _causal_marker_density(ref)
+    if d_gold > 0:
+        directive_density_ratio = min(2.0, d_pred / d_gold)
+    else:
+        directive_density_ratio = np.nan
+
+    return {
+        **base,
+        "schema_valid": int(bool(cand) and not pred.get("_parse_error")),
+        "dimension_keyword_coverage": dim_coverage,
+        "dimensions_touched_pred": len(touched_pred),
+        "dimensions_touched_gold": len(touched_ref),
+        "directive_class": _directive_class(question),
+        "directive_density_ratio": directive_density_ratio,
     }
 
 
@@ -593,6 +924,7 @@ def _batch_text_pairs(df: pd.DataFrame) -> dict[str, list[float]]:
     out = {
         "explanation_bertscore_f1": [np.nan] * n,
         "explanation_rouge_l_f1": [np.nan] * n,
+        "explanation_chrf": [np.nan] * n,
         "answer_bertscore_f1": [np.nan] * n,
         "answer_rouge_l_f1": [np.nan] * n,
         "answer_chrf": [np.nan] * n,
@@ -636,11 +968,52 @@ def _batch_text_pairs(df: pd.DataFrame) -> dict[str, list[float]]:
         _fill(idxs, cands, refs, lang,
               "explanation_bertscore_f1", "explanation_rouge_l_f1")
 
+    # Task F — language-matched branch ({"english", "hindi"}) vs gold A
+    # explanation (gold is English-only in this eval set; score the matched
+    # branch — see _pick_F_branch + score_task_F docstring).
+    for lang in ("en", "hi"):
+        idxs, cands, refs = [], [], []
+        for i, row in df.iterrows():
+            if row["task"] != "F" or row["language"] != lang:
+                continue
+            gold = _parse_json(row["gold_payload"])
+            pred = _parse_json(row["prediction"])
+            branch = _pick_F_branch(pred, lang)
+            expl_g = (gold.get("explanation") or "").strip()
+            if not branch.strip() or not expl_g:
+                continue
+            idxs.append(i)
+            cands.append(branch)
+            refs.append(expl_g)
+        # chrF is essential for Devanagari/Hindi per eval-design §4.6.
+        _fill(idxs, cands, refs, lang,
+              "explanation_bertscore_f1", "explanation_rouge_l_f1",
+              "explanation_chrf")
+
     # Task B — answer pred vs gold model_answer, per language.
     for lang in ("en", "hi"):
         idxs, cands, refs = [], [], []
         for i, row in df.iterrows():
             if row["task"] != "B" or row["language"] != lang:
+                continue
+            gold = _parse_json(row["gold_payload"])
+            pred = _parse_json(row["prediction"])
+            cand = (pred.get("answer") or "").strip()
+            ref = (gold.get("model_answer") or "").strip()
+            if not cand or not ref:
+                continue
+            idxs.append(i)
+            cands.append(cand)
+            refs.append(ref)
+        _fill(idxs, cands, refs, lang,
+              "answer_bertscore_f1", "answer_rouge_l_f1", "answer_chrf")
+
+    # Task G — same answer-vs-gold-model-answer shape as Task B, but for
+    # production-prompt outputs (raw markdown body under pred["answer"]).
+    for lang in ("en", "hi"):
+        idxs, cands, refs = [], [], []
+        for i, row in df.iterrows():
+            if row["task"] != "G" or row["language"] != lang:
                 continue
             gold = _parse_json(row["gold_payload"])
             pred = _parse_json(row["prediction"])
@@ -698,7 +1071,10 @@ def _batch_text_pairs(df: pd.DataFrame) -> dict[str, list[float]]:
 
 # ---------- main ----------
 
-SCORERS = {"A": score_task_A, "B": score_task_B, "C": score_task_C, "E": score_task_E}
+SCORERS = {
+    "A": score_task_A, "B": score_task_B, "C": score_task_C, "E": score_task_E,
+    "F": score_task_F, "G": score_task_G,
+}
 
 
 def main() -> int:
@@ -728,6 +1104,13 @@ def main() -> int:
         gold = _parse_json(r.get("gold_payload"))
         pred = _parse_json(r.get("prediction"))
         m = scorer(r, gold, pred)
+        # Universal §6.4 metrics propagated from predictions.parquet so the
+        # aggregator can compute latency percentiles / cost / validity in a
+        # single pass without rejoining the predictions table.
+        lat_ms = r.get("latency_ms") or 0
+        out_tok = r.get("output_tokens") or 0
+        in_tok = r.get("input_tokens") or 0
+        tps = (out_tok / (lat_ms / 1000.0)) if lat_ms > 0 else np.nan
         rows.append({
             "run_id": r["run_id"],
             "condition": r["condition"],
@@ -737,6 +1120,13 @@ def main() -> int:
             "paper": r.get("paper"),
             "subject": r.get("subject"),
             "stratum_key": r.get("stratum_key"),
+            "latency_ms": float(lat_ms),
+            "ttft_ms": float(r.get("ttft_ms") or 0),
+            "input_tokens": int(in_tok),
+            "output_tokens": int(out_tok),
+            "tokens_per_sec": float(tps) if tps == tps else np.nan,
+            "cost_usd": _cost_usd(r["condition"], int(in_tok), int(out_tok)),
+            "format_valid": _format_valid(task, pred, m),
             **m,
         })
     scores = pd.DataFrame(rows)

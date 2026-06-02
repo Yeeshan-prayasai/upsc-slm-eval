@@ -1,0 +1,58 @@
+{
+  "_meta": {
+    "description": "PESEE-style dimension lexicon for Task G dimension-keyword coverage (eval-design.md §4.7). Six dimensions UPSC Mains rewards covering: political, economic, social, environmental, ethical, international. Each ~30 keywords. Lowercase matched as whole-word substrings in candidate + gold; coverage = |dim_touched_pred| / |dim_touched_gold|.",
+    "version": "v1",
+    "created": "2026-05-29",
+    "source": "Hand-curated by Yeeshan from standard UPSC GS Mains terminology (Polity-Constitution, Indian Economy, Society & Social Justice, Environment, Ethics, IR). Not from published literature — engineered metric flagged as such in eval-design §4.7."
+  },
+  "political": [
+    "constitution", "parliament", "legislature", "judiciary", "executive",
+    "federalism", "democracy", "election", "governance", "policy",
+    "minister", "cabinet", "amendment", "article", "directive principles",
+    "fundamental rights", "supreme court", "high court", "state list", "union list",
+    "concurrent list", "panchayat", "municipality", "bureaucracy", "ordinance",
+    "bill", "act", "regulation", "political party", "opposition", "coalition"
+  ],
+  "economic": [
+    "gdp", "growth", "inflation", "fiscal", "monetary", "rbi",
+    "budget", "deficit", "subsidy", "taxation", "gst", "investment",
+    "fdi", "trade", "export", "import", "manufacturing", "agriculture",
+    "industry", "services", "msme", "employment", "unemployment", "labour",
+    "infrastructure", "banking", "capital", "market", "productivity",
+    "income", "poverty"
+  ],
+  "social": [
+    "caste", "class", "gender", "tribe", "minority", "marginalised",
+    "marginalized", "literacy", "education", "health", "nutrition", "mortality",
+    "fertility", "urbanization", "migration", "inequality", "discrimination",
+    "empowerment", "scheduled caste", "scheduled tribe", "obc", "women",
+    "child", "elderly", "disability", "community", "society", "religion",
+    "culture", "identity", "social justice"
+  ],
+  "environmental": [
+    "climate", "biodiversity", "ecology", "ecosystem", "pollution",
+    "emissions", "carbon", "greenhouse", "deforestation", "afforestation",
+    "wildlife", "conservation", "sustainable", "sustainability", "renewable",
+    "solar", "wind", "fossil", "forest", "wetland", "river", "groundwater",
+    "monsoon", "drought", "flood", "disaster", "environment", "habitat",
+    "species", "ipcc", "unfccc"
+  ],
+  "ethical": [
+    "ethics", "integrity", "accountability", "transparency", "probity",
+    "values", "morality", "moral", "virtue", "duty", "rights",
+    "justice", "fairness", "equity", "honesty", "impartiality",
+    "objectivity", "conscience", "dilemma", "corruption", "nepotism",
+    "favouritism", "favoritism", "whistleblower", "conflict of interest",
+    "trust", "responsibility", "compassion", "empathy", "consent",
+    "dignity"
+  ],
+  "international": [
+    "bilateral", "multilateral", "diplomacy", "treaty", "convention",
+    "united nations", "un security council", "g20", "g7", "brics",
+    "saarc", "asean", "quad", "indo-pacific", "wto", "imf",
+    "world bank", "sanctions", "geopolitics", "sovereignty", "neighbour",
+    "neighbor", "border", "foreign policy", "embassy", "summit",
+    "alliance", "trade agreement", "strategic partnership", "global south",
+    "soft power"
+  ]
+}

@@ -26,10 +26,31 @@ data/prayas_local.sqlite-shm
 data/ft_split/
 # (data/upsc_facts.json IS committed — small, deterministic, public-sourced)
 
-# Trained adapters (large; published to S3 archive instead)
-adapters/
+# Trained adapters
+#   - Raw PEFT adapter files (~24 MB each) ARE committed — irreplaceable, ~22 h FT each.
+#   - Merged HF dirs (15+8 GB) are NOT committed — large, deterministically reproducible
+#     from the raw adapter + base via scripts/merge_adapter.py.
+#   - Mid-training checkpoint dirs are NOT committed (large + redundant); the final
+#     trainer_state.json is relocated to adapters/<name>/trainer_state_final.json and
+#     committed there.
+adapters/*-merged/
+adapters/*/checkpoint-*/
+
+# Catch-all model-weight rules — apply AFTER the explicit allows below so the
+# allows win (gitignore: last matching rule wins).
 *.npz
 *.safetensors
+# Re-allow the small raw PEFT adapter weights (~24 MB each).
+!adapters/*/adapter_model.safetensors
+
+# Sidecar venv for legacy BLEURT/SummaC scorers — huge, locally rebuildable
+.venv-scorers/
+
+# EC2 PEM keys (also matched by *.pem above, but explicit for the AWS/ dir)
+AWS/
+
+# Local research-planning sheet (may contain financial/quota info)
+ResourceSheet.xlsx
 
 # Model cache (huge HF downloads)
 models/cache/

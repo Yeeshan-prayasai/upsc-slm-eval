@@ -1,0 +1,75 @@
+Loading configuration file /Users/yeeshan/PrayasAI/Code/SLM/configs/lora.yaml
+Loading pretrained model
+
+Fetching 10 files:   0%|          | 0/10 [00:00<?, ?it/s]
+Fetching 10 files: 100%|██████████| 10/10 [00:00<00:00, 112147.17it/s]
+Loading datasets
+Training
+Trainable parameters: 0.126% (5.308M/4205.750M)
+Starting training..., iters: 20000
+
+Calculating loss...:   0%|          | 0/50 [00:00<?, ?it/s]
+Calculating loss...:   2%|▏         | 1/50 [00:00<00:45,  1.09it/s]
+Calculating loss...:   4%|▍         | 2/50 [00:02<00:55,  1.16s/it]
+Calculating loss...:   6%|▌         | 3/50 [00:02<00:40,  1.15it/s]
+Calculating loss...:   8%|▊         | 4/50 [00:04<00:47,  1.04s/it]
+Calculating loss...:  10%|█         | 5/50 [00:04<00:36,  1.25it/s]
+Calculating loss...:  12%|█▏        | 6/50 [00:05<00:35,  1.25it/s]
+Calculating loss...:  14%|█▍        | 7/50 [00:06<00:34,  1.26it/s]
+Calculating loss...:  16%|█▌        | 8/50 [00:07<00:41,  1.02it/s]
+Calculating loss...:  18%|█▊        | 9/50 [00:08<00:37,  1.10it/s]
+Calculating loss...:  20%|██        | 10/50 [00:08<00:27,  1.44it/s]
+Calculating loss...:  22%|██▏       | 11/50 [00:09<00:28,  1.39it/s]
+Calculating loss...:  24%|██▍       | 12/50 [00:09<00:27,  1.38it/s]
+Calculating loss...:  26%|██▌       | 13/50 [00:10<00:29,  1.24it/s]
+Calculating loss...:  28%|██▊       | 14/50 [00:11<00:28,  1.25it/s]
+Calculating loss...:  30%|███       | 15/50 [00:12<00:27,  1.25it/s]
+Calculating loss...:  32%|███▏      | 16/50 [00:13<00:27,  1.24it/s]
+Calculating loss...:  34%|███▍      | 17/50 [00:13<00:24,  1.35it/s]
+Calculating loss...:  36%|███▌      | 18/50 [00:15<00:29,  1.10it/s]
+Calculating loss...:  38%|███▊      | 19/50 [00:16<00:30,  1.01it/s]
+Calculating loss...:  40%|████      | 20/50 [00:17<00:28,  1.04it/s]
+Calculating loss...:  42%|████▏     | 21/50 [00:17<00:24,  1.20it/s]
+Calculating loss...:  44%|████▍     | 22/50 [00:19<00:27,  1.03it/s]
+Calculating loss...:  46%|████▌     | 23/50 [00:19<00:25,  1.07it/s]
+Calculating loss...:  48%|████▊     | 24/50 [00:20<00:25,  1.03it/s]
+Calculating loss...:  50%|█████     | 25/50 [00:21<00:22,  1.11it/s]
+Calculating loss...:  52%|█████▏    | 26/50 [00:22<00:20,  1.19it/s]
+Calculating loss...:  54%|█████▍    | 27/50 [00:23<00:17,  1.30it/s]
+Calculating loss...:  56%|█████▌    | 28/50 [00:24<00:19,  1.14it/s]
+Calculating loss...:  58%|█████▊    | 29/50 [00:24<00:17,  1.18it/s]
+Calculating loss...:  60%|██████    | 30/50 [00:25<00:17,  1.14it/s]
+Calculating loss...:  62%|██████▏   | 31/50 [00:26<00:17,  1.08it/s]
+Calculating loss...:  64%|██████▍   | 32/50 [00:28<00:19,  1.08s/it]
+Calculating loss...:  66%|██████▌   | 33/50 [00:29<00:16,  1.04it/s]
+Calculating loss...:  68%|██████▊   | 34/50 [00:30<00:15,  1.01it/s]
+Calculating loss...:  70%|███████   | 35/50 [00:30<00:13,  1.10it/s]
+Calculating loss...:  72%|███████▏  | 36/50 [00:31<00:12,  1.08it/s]
+Calculating loss...:  74%|███████▍  | 37/50 [00:33<00:13,  1.06s/it]
+Calculating loss...:  76%|███████▌  | 38/50 [00:33<00:11,  1.08it/s]
+Calculating loss...:  78%|███████▊  | 39/50 [00:34<00:09,  1.21it/s]
+Calculating loss...:  80%|████████  | 40/50 [00:35<00:07,  1.25it/s]
+Calculating loss...:  82%|████████▏ | 41/50 [00:36<00:08,  1.07it/s]
+Calculating loss...:  84%|████████▍ | 42/50 [00:37<00:08,  1.08s/it]
+Calculating loss...:  86%|████████▌ | 43/50 [00:39<00:08,  1.17s/it]
+Calculating loss...:  88%|████████▊ | 44/50 [00:39<00:05,  1.07it/s]
+Calculating loss...:  90%|█████████ | 45/50 [00:40<00:04,  1.19it/s]
+Calculating loss...:  92%|█████████▏| 46/50 [00:41<00:03,  1.10it/s]
+Calculating loss...:  94%|█████████▍| 47/50 [00:41<00:02,  1.42it/s]
+Calculating loss...:  96%|█████████▌| 48/50 [00:42<00:01,  1.09it/s]
+Calculating loss...:  98%|█████████▊| 49/50 [00:44<00:01,  1.08s/it]
+Calculating loss...: 100%|██████████| 50/50 [00:45<00:00,  1.13s/it]
+Calculating loss...: 100%|██████████| 50/50 [00:45<00:00,  1.10it/s]
+[WARNING] Some sequences are longer than 1536 tokens. The longest sentence 2017 will be truncated to 1536. Consider pre-splitting your data to save memory.
+[WARNING] Some sequences are longer than 1536 tokens. The longest sentence 2631 will be truncated to 1536. Consider pre-splitting your data to save memory.
+[WARNING] Some sequences are longer than 1536 tokens. The longest sentence 1674 will be truncated to 1536. Consider pre-splitting your data to save memory.
+[WARNING] Some sequences are longer than 1536 tokens. The longest sentence 3041 will be truncated to 1536. Consider pre-splitting your data to save memory.
+[WARNING] Some sequences are longer than 1536 tokens. The longest sentence 1651 will be truncated to 1536. Consider pre-splitting your data to save memory.
+[WARNING] Some sequences are longer than 1536 tokens. The longest sentence 1681 will be truncated to 1536. Consider pre-splitting your data to save memory.
+[WARNING] Some sequences are longer than 1536 tokens. The longest sentence 1744 will be truncated to 1536. Consider pre-splitting your data to save memory.
+[WARNING] Some sequences are longer than 1536 tokens. The longest sentence 2133 will be truncated to 1536. Consider pre-splitting your data to save memory.
+[WARNING] Some sequences are longer than 1536 tokens. The longest sentence 1554 will be truncated to 1536. Consider pre-splitting your data to save memory.
+Iter 1: Val loss 1.696, Val took 45.600s
+libc++abi: terminating due to uncaught exception of type std::runtime_error: [METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)
+/opt/homebrew/Cellar/python@3.12/3.12.12_2/Frameworks/Python.framework/Versions/3.12/lib/python3.12/multiprocessing/resource_tracker.py:279: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '

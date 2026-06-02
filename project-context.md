@@ -483,3 +483,78 @@ make score-tier1 aggregate test-hypotheses   # Stage 5 — scoring
 ```
 
 **Cost ceiling:** kill the instance the moment FT finishes — `g6.xlarge` is ~$0.80/h × ~24 h = ~$20 if you don't forget. Set a billing alert at $50 in CloudWatch as a safety net.
+
+- 2026-05-27 (Stage 3 FT — Qwen running on EC2, full data + dep + leakage story): Massive day. Sequence of events on the AWS path:
+
+   **1. Account + quota** — User created fresh AWS account; default quota for "Running On-Demand G and VT instances" was 0 vCPU (standard for new accounts). Initial Mumbai (ap-south-1) quota request submitted; switched to us-east-1 (N. Virginia) which had faster auto-approval. Approved value: 8 vCPU. After approval, hit "Insufficient capacity" on g6e.xlarge in some AZs; resolved by picking specific Subnet/AZ.
+
+   **2. Instance** — `g6e.xlarge` (1× NVIDIA L40S 48 GB VRAM, $1.86/hr us-east-1) launched in us-east-1. Storage: 120 GB → upped to 247 GB gp3 (DLAMI + model weights + checkpoints + venv ≈ 75 GB max usage). AMI: "Deep Learning Base AMI with Single CUDA (Ubuntu 24.04)" → `ami-0bdf3b08ec4350e48` x86 (NOT Arm). Key pair: `upsc-slm-MAIN.pem` created in us-east-1 (Mumbai key `upsc-slm.pem` doesn't apply — region-scoped). Actually used `upsc-slm.pem` (turned out the Mumbai-named file was the one that worked — user had both files; `upsc-slm-MAIN.pem` failed auth).
+
+   **3. Repo bootstrap on EC2** — GitHub deploy key approach (ed25519, read-only, scoped to this repo only). Generated `~/.ssh/github_deploy` on EC2, added to repo Deploy Keys (read-only). Then `git clone git@github.com:YeeshanMalik/upsc-slm-eval.git`. Production-grade: not a PAT, not ssh-agent forwarding.
+
+   **4. Production dir layout** — `mkdir -p logs adapters data/ft_split` ahead of FT; logs persistent (NOT /tmp); `set -euo pipefail` everywhere; HF token via `hf auth login` interactive (saves to `~/.cache/huggingface/`).
+
+   **5. Pre-flight verifier (`scripts/verify_aws_env.py`)** — 8 hard-fail checks before any GPU work starts: (a) CUDA-capable GPU with ≥24 GiB VRAM + BF16; (b) torch+CUDA matmul kernel actually works; (c) bitsandbytes NF4 4-bit Linear forward pass works AND version ≥0.46.1 (transformers 5.x requirement); (d) trl SFTTrainer+SFTConfig importable; (e) HuggingFace authenticated via Hub API; (f) ≥50 GiB disk free; (g) data/ft_split/train+valid.jsonl exist with plausible line counts; (h) configs/lora.yaml present. Wired as Makefile prereq of ft-{qwen,gemma}-aws so no training can start on a misconfigured box.
+
+   **6. Dep stack — 5 iterations** before settling. Original requirements-aws.txt was Oct-2024 vintage; cascade of incompatibilities surfaced as we hit them:
+   - `mlx-lm 0.21.5` → bumped to git commit `df1d3f3c` (Apr 2026, "Fix Gemma 4 sanitize() not stripping KV projections for shared layers") for the Gemma 4 hybrid-attention shared-layer bug
+   - `transformers 4.46.3` (Oct 2024) → didn't know `qwen3_5` arch (Mar 2026 release)
+   - `transformers 4.56.2` → still didn't know `qwen3_5` 
+   - `transformers 5.9.0` (May 2026) → has both `qwen3_5` and `gemma4`; major-version bump from 4.x
+   - `trl 0.11.4` → trl 1.5.0 (renamed `max_seq_length` → `max_length` in SFTConfig; `tokenizer=` → `processing_class=`)
+   - `peft 0.13.2` → peft 0.19.1
+   - `accelerate 1.0.1` → 1.13.0
+   - `datasets 3.0.2` → 4.7.0
+   - `bitsandbytes 0.44.1` → 0.49.2 (transformers 5.x requires ≥ 0.46.1, validated at model-load time)
+   - Missing transitive: `rich` (trl 0.11 lazy-imports inside SFTTrainer)
+   - `torch 2.5.1` → auto-upgraded to `torch 2.12.0 + cu130` when flash-linear-attention pulled CUDA 13 stack
+   - NEW deps for Qwen 3.5 hybrid arch: `flash-linear-attention 0.5.0` + `causal-conv1d 1.6.2.post1` (the second built from source over ~7 min; without it Qwen 3.5's linear-attention layers fall back to Python = 21 sec/step. With it: 4.2 sec/step. ~5× speedup)
+   Final stack pinned in `requirements-aws.txt`.
+
+   **7. Architecture-aware run_ft_aws.py rewrite** — production-grade audit found 12 issues across the original 95-LOC script. Rewrite (~190 LOC):
+   - `_get_num_text_layers(base)`: walks top-level config AND text_config to find `num_hidden_layers` (Qwen 3.5 wraps text attrs in `text_config`; Gemma 4 too)
+   - `_build_target_modules_regex(base, total, lora_n)`: regex scoped to `model.layers.<N>.*.X_proj` so LoRA hits only the text-decoder's last N layers, NOT the multimodal vision/audio towers (which share the same proj names)
+   - Replaced deprecated `torch_dtype=` with `dtype=` (transformers 5.x)
+   - Added `prepare_model_for_kbit_training()` (canonical QLoRA prep — handles layer-norm upcasting + grad-checkpoint-vs-quant interactions)
+   - `trust_remote_code=True` on AutoModel/AutoConfig/AutoTokenizer (Qwen 3.5 + Gemma 4 ship custom modeling code for the fresh architectures)
+   - Assertion: `n_trainable in [1M, 5%]` after `get_peft_model` — guarantees target_modules regex didn't silently match zero modules (would produce no-op LoRA)
+   - Auto-resume passes actual latest checkpoint PATH (not bool) — trl 1.x change
+   - `model.config.pad_token_id` propagated from tokenizer (required for some attn impls)
+   - `python -u` (unbuffered stdout) so loss prints flush per-line under nohup (vs 8 KB block buffering)
+   - `log_level="info"` in SFTConfig (transformers 5.x defaults "passive" which silences INFO-level training logs)
+
+   **8. CONTENT-LEVEL DATA LEAKAGE FIX (CRITICAL)** — User paused FT before launch to verify data quality. Audit found **556 leaked questions** in two modes:
+   - Task A (272 leaked rows): same UPSC PYQ exists in `prelims_pyq_questions` AND `prod.mcqs` with different IDs but identical question text. Old `assert_no_leakage` only checked `pair_id` → missed cross-source duplicates
+   - Task C (2,465 leaked rows): `evaluation_questions` has many student answers per UPSC question; eval picks one student's grading for a question, FT picks 3+ other students' gradings of the same UPSC question. Different `(question_id, evaluation_id)` pairs, same question stem → model would have been trained on the rubric pattern for the same UPSC question it'd be tested on
+   - **Both modes invalidate the pre-registered hypothesis tests.** Fix: `assert_no_leakage` now takes optional `eval_question_hashes` + `ft_question_hashes` args and checks normalized-whitespace SHA-256 hashes. Built-into corpus build: question text hashes computed for eval, FT pairs dropped if hash matches. 9 unit tests pass (4 ID-level + 5 new content-level). 
+   - Cleaned corpus: 43,615 → **40,571 pairs** (dropped 347 Task A + 2,697 Task C = 3,044 leaked). Re-materialized JSONL: 38,544 train + 2,027 valid. Both leakage modes verified empty.
+
+   **9. PRAYAS PRODUCTION PROMPTS (received 2026-05-26)** — All three pasted by user in single message:
+   - `configs/prompts/prelims_explanation.md` (~10 KB, Task F bilingual EN/HI schema with statement-analysis structure)
+   - `configs/prompts/mains_model_answer.md` (~21 KB, Task G DSL L1-L4 + banned words + mandatory diagrams + R-D-S-C protocol — markedly more constrained than the FT-corpus Task-B scaffold)
+   - `configs/prompts/current_affairs_queries.md` (Query Specialist — auxiliary, not wired into eval pipeline; out of scope)
+   - Wired via `scripts/runners.get_production_prompt(task)` (Path A2 — inference-time only, no re-FT). Front-matter splitter uses `
+---
+` to avoid mis-splitting on markdown table separators.
+   - `eval-design.md` §4.6 / §4.7 updated: prompts marked as received; Task G note that production prompt is markedly more constrained than the FT-corpus scaffold → format compliance becomes a meaningful Tier-1 metric.
+
+   **10. Qwen FT launched + training healthy** — `make ft-qwen-aws` daemonized via nohup + disown. After ~4 false starts (rich missing, qwen3_5 missing from transformers, max_seq_length API rename, bnb version mismatch), it now runs stably:
+   - PID 9868, alive 5+ hours as of this log entry
+   - Step ~4500/16000 (28%) — approaching the 1-epoch mark (step 4818)
+   - **Train loss: 1.122 → 0.79** (-29.6 % over 4 K steps). Plateauing in 0.78-0.81 band
+   - **Eval loss trajectory** (8 evals, every 500 steps): 0.925 → 0.886 → 0.862 → 0.839 → 0.824 → 0.811 → 0.801 → **0.791**. -14.5 % from start. Still descending.
+   - Train-eval gap **shrinking from +0.04 (step 1000) to +0.003 (step 3500)** — NOT overfitting, the inverse: convergent generalization. Model is finding patterns that transfer to held-out data
+   - Token accuracy: 72.8 % → 79.5 %
+   - Grad norm stable 0.4-0.55 (no instability)
+   - 4 checkpoints saved (1000, 2000, 3000, 4000) — adapter recoverable from any
+   - GPU: 75-95 % util sustained, 18.9 GB / 46 GB VRAM, 71-75 °C, ~240 W of 350 W TDP
+   - ETA ~14 h remaining for Qwen; Gemma FT launches sequentially after
+   - Cost so far: ~$10. Projected total for both adapters: ~$74
+
+   **11. Pending decisions surfaced but deferred**:
+   - **Task imbalance** (A=66.6%, B=6.4%, C=19.9%, E=7.2%): accepted Option 1 (natural distribution, document as methodology note). Won't oversample.
+   - **DoRA vs LoRA v2 ablation** suggested in research subagent's report: not in scope for v1
+   - **MTL-LoRA / R-LoRA** (Oct 2024-Feb 2025 papers showing > LoRA + > DoRA in multi-task settings): noted as v2 candidate
+   - **Production prompt format ≠ FT scaffold for Tasks F/G**: Path A2 means inference-time-only prompt swap. F/G format-compliance will be a meaningful Tier-1 metric on top of content metrics
+
+   **Repo commits since last log entry (May 21):** content-leakage fix + production prompts wiring (`bf7c998`), unbuffered stdout (`60a5691`), log_level info (`2d04e0f`), trl 1.5 max_length rename (`c66cd4d`), transformers 5.9 + trust_remote_code (`d5f11bf`), bnb 0.49.2 + verifier hardening (`60ba84d`), prod-grade run_ft_aws rewrite (`0f19aae`), and the various Makefile / deps tweaks. All on `main` at github.com/YeeshanMalik/upsc-slm-eval.

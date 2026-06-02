@@ -22,7 +22,17 @@ LETTER_RE = re.compile(r"\b[ABCD]\b")
 INT_RE = re.compile(r"\b(\d{1,3})\b")
 GEMINI_FLASH_IN_USD_PER_M = 0.50
 GEMINI_FLASH_OUT_USD_PER_M = 3.00
-MAX_OUT_TOKENS = {"A": 1024, "B": 1500, "C": 1024, "E": 1500}
+# Task A/B/C/E are FT-corpus tasks; F/G are production-prompt capability tests
+# reusing Task A and Task B eval items respectively (see eval-design.md §4.6/§4.7).
+MAX_OUT_TOKENS = {"A": 1024, "B": 1500, "C": 1024, "E": 1500, "F": 1500, "G": 1500}
+
+# Tasks F and G derive their eval items from A and B respectively.
+EVAL_TASK_TO_INFERENCE_TASKS = {
+    "A": ["A", "F"],   # each Task-A eval item produces both A and F predictions
+    "B": ["B", "G"],   # each Task-B eval item produces both B and G predictions
+    "C": ["C"],
+    "E": ["E"],
+}
 
 # Path A2: the SAME instruction strings used at FT-corpus build time
 # (scripts/build_ft_corpus.py TASK_INSTRUCTIONS). Train-test alignment is the
@@ -81,19 +91,6 @@ def _load_production_prompt(name: str) -> str:
     return parts[1].strip() if len(parts) == 2 else text.strip()
 
 
-# Production prompts for the capability-test tasks F and G.
-# These are loaded lazily from configs/prompts/ so changes don't require
-# code edits. NOT used at FT-corpus build time — Path A2 design.
-PRODUCTION_TASK_INSTRUCTIONS = {
-    # Task F — Prelims Explanation Generation (bilingual). Reuses Task A's
-    # 800 eval items but feeds the GOLD letter as input + production prompt.
-    "F": _load_production_prompt,   # loaded on demand via _load_production_prompt("prelims_explanation")
-    # Task G — Mains Model-Answer Generation. Reuses Task B's 400 eval items
-    # with the prayas DSL prompt (L1-L4, banned words, mandatory diagram, …).
-    "G": _load_production_prompt,
-}
-
-
 def get_production_prompt(task: str) -> str:
     """Resolve Task F / Task G to its prayas-canonical production prompt."""
     return {
@@ -143,28 +140,72 @@ def _options_lookup(opts) -> dict[str, str]:
     return {}
 
 
-def _input_for(item: EvalItem) -> dict:
-    """Build the JSON-input payload that mirrors FT-corpus `input` for this task."""
+def _input_for(item: EvalItem, inference_task: str | None = None) -> dict:
+    """Build the JSON-input payload for `inference_task` against `item`.
+
+    `inference_task` defaults to `item.task` (i.e. eval-task == inference-task);
+    pass explicitly for Tasks F + G which derive from A + B eval items but
+    use different input schemas (F includes the gold answer; G is a Mains-only
+    prompt without max_score).
+    """
     g = item.gold
-    if item.task == "A":
+    task = inference_task or item.task
+    if task == "A":
         return {"question": g["question"],
                 "options": _options_lookup(g["options"]),
                 "paper": item.paper}
-    if item.task == "B":
+    if task == "B":
         return {"question": g["question"], "paper": item.paper, "subject": item.subject,
                 "word_count": int(g.get("word_count") or 250),
                 "max_score": float(g.get("max_score") or 15)}
-    if item.task == "C":
+    if task == "C":
         return {"question_text": g["question_text"], "answer_text": g["answer_text"],
                 "max_score": float(g["max_score"])}
-    if item.task == "E":
+    if task == "E":
         return {"date": g["date"], "title": g["title"], "article": g["source_text"]}
-    raise ValueError(item.task)
+    if task == "F":
+        # Task F (Prelims Explanation Generation, production prompt): given the
+        # gold correct option, generate the bilingual explanation. Reuses Task A
+        # eval items but the model is NOT asked to pick — it's asked to explain
+        # the gold answer.
+        return {
+            "question": g["question"],
+            "options": _options_lookup(g["options"]),
+            "correct_answer": (g.get("correct_option") or "").upper(),
+            "subject": item.subject,
+            "paper": item.paper,
+            "language": item.language,
+        }
+    if task == "G":
+        # Task G (Mains Model-Answer Generation, production prompt): same eval
+        # items as Task B, but the prayas DSL prompt expects a different
+        # input shape (no `max_score`, no `paper`/`subject` JSON; the DSL
+        # itself handles all of that internally from the question text).
+        return {
+            "question": g["question"],
+            "word_count": int(g.get("word_count") or 250),
+            "additional_context": "",   # prayas pipeline injects this from
+                                        # a separate search step (see
+                                        # configs/prompts/current_affairs_queries.md);
+                                        # we leave empty for the capability test.
+        }
+    raise ValueError(f"unknown task: {task}")
 
 
-def build_prompt(item: EvalItem) -> str:
-    """Same instruction + JSON input as the FT corpus saw at train time."""
-    return f"{TASK_INSTRUCTIONS[item.task]}\n\n{json.dumps(_input_for(item), ensure_ascii=False)}"
+def build_prompt(item: EvalItem, inference_task: str | None = None) -> str:
+    """Build the prompt for `inference_task` against `item`.
+
+    A/B/C/E use Path-A2 FT-corpus instructions (TASK_INSTRUCTIONS).
+    F/G use prayas's production prompts loaded from configs/prompts/.
+    """
+    task = inference_task or item.task
+    if task in TASK_INSTRUCTIONS:
+        instruction = TASK_INSTRUCTIONS[task]
+    elif task in ("F", "G"):
+        instruction = get_production_prompt(task)
+    else:
+        raise ValueError(f"no prompt available for task: {task}")
+    return f"{instruction}\n\n{json.dumps(_input_for(item, task), ensure_ascii=False)}"
 
 
 def build_confidence_prompt(item: EvalItem, letter: str) -> str:
@@ -201,14 +242,29 @@ def _extract_json(text: str) -> dict | None:
 
 
 def parse_output(task: str, raw: str) -> dict:
-    """All tasks output JSON under Path A2. Fallback for Task A: regex-extract letter."""
+    """Parse the raw model output for `task`.
+
+    A/B/C/E use Path-A2 JSON instructions. Task F uses the prayas production
+    prompt which also emits JSON ({"english", "hindi"}). Task G emits raw
+    markdown (per the Mains DSL prompt — no JSON enforced).
+    """
+    if task == "G":
+        # Mains DSL prompt: raw markdown body, no JSON wrapper expected.
+        text = (raw or "").strip()
+        return {"answer": text} if text else {"_parse_error": True}
+
     parsed = _extract_json(raw)
     if parsed is None:
-        # Task A fallback: model may emit a bare letter despite the JSON instruction
         if task == "A":
+            # Task A fallback: model may emit a bare letter despite the JSON instruction
             m = LETTER_RE.search(raw.upper())
             if m:
                 return {"answer": m.group(0), "explanation": "", "_format_warn": True}
+        if task == "F":
+            # Task F fallback: keep raw text under english if the model bypassed JSON.
+            text = (raw or "").strip()
+            if text:
+                return {"english": text, "hindi": "", "_format_warn": True}
         return {"_parse_error": True}
     if task == "A":
         ans = parsed.get("answer")
@@ -264,9 +320,10 @@ class MLXLoRARunner:
                           latency_ms=latency_ms, ttft_ms=ttft_ms,
                           input_tokens=in_tokens, output_tokens=out_tokens)
 
-    def predict(self, item: EvalItem) -> Prediction:
-        pred = self._generate(build_prompt(item), MAX_OUT_TOKENS[item.task])
-        pred.parsed = parse_output(item.task, pred.raw)
+    def predict(self, item: EvalItem, inference_task: str | None = None) -> Prediction:
+        task = inference_task or item.task
+        pred = self._generate(build_prompt(item, task), MAX_OUT_TOKENS[task])
+        pred.parsed = parse_output(task, pred.raw)
         return pred
 
     def confidence(self, item: EvalItem, letter: str) -> int:
@@ -285,7 +342,13 @@ class GeminiRunner:
             raise RuntimeError("GEMINI_API_KEY (or GOOGLE_API_KEY) not set")
         self.client = genai.Client(api_key=api_key)
         self.model = model
-        self.exemplar_block: dict[str, str] = {"A": "", "B": "", "C": "", "E": ""}
+        # Exemplar prefix per inference-task. F/G are kept empty by design:
+        # they are capability tests of the prayas production prompts themselves,
+        # not generalization tests. Adding FT-corpus exemplars (which use the
+        # different Path-A2 prompts) would contaminate the prompt.
+        self.exemplar_block: dict[str, str] = {
+            "A": "", "B": "", "C": "", "E": "", "F": "", "G": "",
+        }
 
     @retry(
         stop=stop_after_attempt(5),
@@ -317,10 +380,11 @@ class GeminiRunner:
                           latency_ms=latency_ms, ttft_ms=ttft_ms,
                           input_tokens=in_tokens, output_tokens=out_tokens)
 
-    def predict(self, item: EvalItem) -> Prediction:
-        prompt = self.exemplar_block[item.task] + build_prompt(item)
-        pred = self._generate(prompt, MAX_OUT_TOKENS[item.task])
-        pred.parsed = parse_output(item.task, pred.raw)
+    def predict(self, item: EvalItem, inference_task: str | None = None) -> Prediction:
+        task = inference_task or item.task
+        prompt = self.exemplar_block.get(task, "") + build_prompt(item, task)
+        pred = self._generate(prompt, MAX_OUT_TOKENS[task])
+        pred.parsed = parse_output(task, pred.raw)
         return pred
 
     def confidence(self, item: EvalItem, letter: str) -> int:
@@ -353,12 +417,29 @@ class GeminiFewShotRunner(GeminiRunner):
 
 
 def estimate_gemini_cost(eval_set_path: Path, few_shot: bool) -> float:
-    """Pre-run cost estimate (USD). Conservative — uses upper-bound token estimates."""
+    """Pre-run cost estimate (USD). Conservative — uses upper-bound token estimates.
+
+    Accounts for the inference-task fan-out via EVAL_TASK_TO_INFERENCE_TASKS:
+    each Task-A eval row drives one A and one F call; each Task-B drives one
+    B and one G call. F + G use the prayas production prompts which are
+    substantially longer than the FT-corpus instructions.
+    """
     df = pd.read_parquet(eval_set_path)
-    in_per_task = {"A": 250, "B": 200, "C": 700, "E": 1800}
-    out_per_task = {"A": 250, "B": 800, "C": 600, "E": 1100}
-    few_shot_in = 1800 if few_shot else 0
-    counts = df.groupby("task").size().to_dict()
-    in_tok = sum(counts.get(t, 0) * (in_per_task[t] + few_shot_in) for t in ("A", "B", "C", "E"))
-    out_tok = sum(counts.get(t, 0) * out_per_task[t] for t in ("A", "B", "C", "E"))
-    return (in_tok / 1_000_000) * GEMINI_FLASH_IN_USD_PER_M + (out_tok / 1_000_000) * GEMINI_FLASH_OUT_USD_PER_M
+    # Rough upper bounds (input includes the instruction text).
+    # F input ~ 2600 tokens (large prayas prompt + question + options + gold).
+    # G input ~ 3500 tokens (giant Mains DSL prompt + question).
+    in_per_task = {"A": 250, "B": 200, "C": 700, "E": 1800,
+                   "F": 2600, "G": 3500}
+    out_per_task = {"A": 250, "B": 800, "C": 600, "E": 1100,
+                    "F": 700, "G": 900}
+    # Few-shot exemplars are only prepended for A/B/C/E (see GeminiFewShotRunner).
+    few_shot_extra = {"A": 1800, "B": 1800, "C": 1800, "E": 1800,
+                      "F": 0, "G": 0} if few_shot else {k: 0 for k in in_per_task}
+    counts = df.groupby("task").size().to_dict()  # eval-task counts
+    in_tok = out_tok = 0
+    for eval_task, n in counts.items():
+        for inf_task in EVAL_TASK_TO_INFERENCE_TASKS.get(eval_task, [eval_task]):
+            in_tok += n * (in_per_task[inf_task] + few_shot_extra[inf_task])
+            out_tok += n * out_per_task[inf_task]
+    return ((in_tok / 1_000_000) * GEMINI_FLASH_IN_USD_PER_M
+            + (out_tok / 1_000_000) * GEMINI_FLASH_OUT_USD_PER_M)

@@ -3,7 +3,7 @@
         ft-gemma ft-qwen materialize-ft-split verify-aws-env ft-gemma-aws ft-qwen-aws \
         validate-gemma validate-qwen \
         infer infer-c1a infer-c1b infer-c2 infer-c3 \
-        score-tier1 aggregate test-hypotheses \
+        score-tier1 aggregate test-hypotheses render-report \
         test clean
 
 RUN_ID ?= $(shell date +%Y%m%d)
@@ -96,6 +96,13 @@ aggregate: score-tier1
 
 test-hypotheses: score-tier1
 	$(PYTHON) scripts/test_hypotheses.py
+
+# Renders the §6 + §7 tables of experiment-report.md from aggregate +
+# hypothesis_tests + stratum_heatmap. Idempotent; run --check first to
+# see which (condition, task, metric) cells would fill.
+render-report: aggregate test-hypotheses
+	$(PYTHON) scripts/render_report.py --check
+	$(PYTHON) scripts/render_report.py
 
 test:
 	$(PYTHON) -m pytest tests/ -v

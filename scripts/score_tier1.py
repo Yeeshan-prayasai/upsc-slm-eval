@@ -201,11 +201,18 @@ def _tokens(text: str) -> list[str]:
 
 
 def _sentences(text: str) -> list[str]:
+    """Punkt-light sentence splitter — splits on `.!?` followed by whitespace
+    and then ANY of: uppercase letter, Devanagari letter, digit, or an opening
+    quote/paren ('"`([). Earlier version required uppercase or Devanagari only,
+    which dropped sentences starting with a quoted phrase (`"He said..."`) or
+    a number ("2024 marks the..."), inflating the per-sentence variance metric.
+    """
     if not text:
         return []
-    # nltk's sent_tokenize requires a download; punkt-light regex split is
-    # adequate for the readability + sentence-variance metrics we need.
-    parts = re.split(r"(?<=[.!?])\s+(?=[A-Zऀ-ॿ])", text.strip())
+    parts = re.split(
+        r"(?<=[.!?])\s+(?=[A-Zऀ-ॿ0-9'\"`\(\[])",
+        text.strip(),
+    )
     return [p for p in parts if p]
 
 
@@ -289,15 +296,32 @@ REASONING_MARKERS = (
 # ("model said it cannot answer") from format failure ("model emitted garbage").
 # Refusal counts as "abstain" (neg-mark = 0) at the rubric level; format failure
 # is a broken prediction. We detect both then keep them in separate columns.
+#
+# English patterns wrap in `\b`-bounded alternation; Hindi patterns can't rely
+# on ASCII `\b` semantics around Devanagari so are listed as bare substrings
+# (the surrounding non-capturing alternation handles segmentation). re.UNICODE
+# is default in Python 3 — included explicitly for clarity.
+_REFUSAL_EN = (
+    r"\b(?:cannot answer|can'?t answer|"
+    r"i\s+(?:don'?t|do not)\s+know|"
+    r"insufficient\s+(?:information|context)|"
+    r"unable\s+to\s+(?:answer|determine)|"
+    r"no\s+answer|none\s+of\s+the\s+above|"
+    r"skip(?:ping)?)\b"
+)
+_REFUSAL_HI = (
+    # मुझे नहीं पता / मुझे ज्ञात नहीं — "I don't know"
+    r"मुझे\s+(?:नहीं\s+पता|ज्ञात\s+नहीं|पता\s+नहीं)|"
+    # उत्तर नहीं मालूम — "answer not known"
+    r"उत्तर\s+(?:नहीं\s+मालूम|ज्ञात\s+नहीं)|"
+    # जानकारी अनुपलब्ध / जानकारी नहीं — "information unavailable / no info"
+    r"जानकारी\s+(?:अनुपलब्ध|नहीं)|"
+    # स्किप / असमर्थ — "skip / unable"
+    r"असमर्थ|स्किप"
+)
 REFUSAL_MARKERS = re.compile(
-    r"\b(cannot answer|can'?t answer|i (don'?t|do not) know|"
-    r"insufficient (information|context)|unable to (answer|determine)|"
-    r"no answer|none of the above|skip(?:ping)?|"
-    r"मुझे नहीं पता|"        # मुझे नहीं पता
-    r"जानकारी वसंख|"               # जानकारी असंख
-    r"असमर्थ|"                                          # असमर्थ
-    r"उत्तर नहीं मालूम)\b",  # उत्तर नहीं मालूम
-    flags=re.IGNORECASE,
+    rf"(?:{_REFUSAL_EN})|(?:{_REFUSAL_HI})",
+    flags=re.IGNORECASE | re.UNICODE,
 )
 
 
@@ -309,8 +333,28 @@ def _is_refusal(raw: str, parsed: dict) -> int:
     return int(bool(REFUSAL_MARKERS.search(text)))
 
 
+# Common short words that would false-positive a distractor "token hit" if left
+# in the option vocabulary (e.g. "this", "with", "from", "have"). Manually
+# curated stopword-style filter — only applied to the per-distractor token-hit
+# check below.
+_DISTRACTOR_TOKEN_STOPWORDS = {
+    "this", "that", "with", "from", "have", "been", "were", "they",
+    "their", "there", "which", "what", "when", "where", "while", "than",
+    "then", "some", "such", "only", "into", "also", "these", "those",
+    "would", "could", "should", "shall", "will", "must", "many", "more",
+    "most", "much", "very", "even", "each", "every", "both", "above",
+    "below", "between", "during", "after", "before", "about",
+}
+
+
 def _distractor_coverage(explanation: str, options: dict | list, correct: str) -> float:
-    """Fraction of wrong options addressed in the explanation."""
+    """Fraction of wrong options the explanation explicitly addresses.
+
+    Per eval-design §4.1: "the option letter is mentioned AND ≥ 1 distinctive
+    token from that option's text appears in the explanation". Distinctive =
+    >3 chars AND not in `_DISTRACTOR_TOKEN_STOPWORDS`. Letter matching is
+    case-insensitive (Option A / option a / A) / a) all count).
+    """
     if isinstance(options, list):
         opts_map = {o.get("id", "").upper(): o.get("text", "") for o in options if isinstance(o, dict)}
     elif isinstance(options, dict):
@@ -321,15 +365,29 @@ def _distractor_coverage(explanation: str, options: dict | list, correct: str) -
     wrong_letters = [k for k in ("A", "B", "C", "D") if k in opts_map and k != correct]
     if not wrong_letters:
         return 0.0
-    expl_lower = (explanation or "").lower()
+    expl_text = explanation or ""
+    if not expl_text:
+        return 0.0
     hits = 0
     for letter in wrong_letters:
         opt_text = opts_map.get(letter, "")
-        # tokenize option text; require letter mention AND ≥1 distinctive token
-        opt_tokens = [t for t in _tokens(opt_text) if len(t) > 3]
-        letter_mentioned = re.search(rf"\boption\s+{letter}\b|\b{letter}\)\B", expl_lower) is not None
+        # Filter to distinctive tokens (>3 chars, not common stopwords).
+        opt_tokens = [
+            t for t in _tokens(opt_text)
+            if len(t) > 3 and t.lower() not in _DISTRACTOR_TOKEN_STOPWORDS
+        ]
+        # Case-insensitive letter mention. Accepts "Option A", "option A",
+        # "(A)", "A)" — all standard rubric formats.
+        letter_mentioned = re.search(
+            rf"\boption\s+{letter}\b|\(\s*{letter}\s*\)|\b{letter}\)",
+            expl_text,
+            flags=re.IGNORECASE,
+        ) is not None
+        if not letter_mentioned:
+            continue
+        expl_lower = expl_text.lower()
         token_hit = any(t.lower() in expl_lower for t in opt_tokens[:5])
-        if letter_mentioned and token_hit:
+        if token_hit:
             hits += 1
     return hits / len(wrong_letters)
 
@@ -462,13 +520,31 @@ def _hindi_code_mixing(text: str) -> float:
     return 1.0 - (devanagari / len(letters))
 
 
+def _word_count_adherence(actual: int, target: int) -> float:
+    """Asymmetric word-count adherence — UPSC graders penalize undershoot
+    (missing breadth/depth) more harshly than overshoot (still has content,
+    just over time). 1.0 at exact target; linear decay outside; undershoot
+    scaled 1.5× steeper than overshoot. Clipped to [0, 1].
+    """
+    target = max(1, int(target))
+    delta = actual - target
+    # 1.0 within ±10% (UPSC graders' typical leniency band).
+    if abs(delta) <= 0.10 * target:
+        return 1.0
+    if delta < 0:
+        # undershoot: 1 - 1.5 * (target - actual) / target
+        return max(0.0, 1.0 - 1.5 * abs(delta) / target)
+    # overshoot: 1 - (actual - target) / target
+    return max(0.0, 1.0 - delta / target)
+
+
 def score_task_B(row: dict, gold: dict, pred: dict) -> dict:
     cand = (pred.get("answer") or "").strip()
     ref = (gold.get("model_answer") or "").strip()
 
     target_wc = int(gold.get("word_count") or 250)
     wc_cand = _word_count(cand)
-    wc_adherence = max(0.0, 1.0 - abs(wc_cand - target_wc) / max(1, target_wc))
+    wc_adherence = _word_count_adherence(wc_cand, target_wc)
 
     sents_cand = _sentences(cand)
     sents_ref = _sentences(ref)
@@ -523,6 +599,7 @@ def score_task_B(row: dict, gold: dict, pred: dict) -> dict:
     fk = float(textstat.flesch_kincaid_grade(cand)) if cand else 0.0
 
     return {
+        "schema_valid": int(bool(cand) and not pred.get("_parse_error")),
         "word_count_adherence": wc_adherence,
         "sentence_count_adherence": sc_adherence,
         "paragraph_count_adherence": para_adherence,
@@ -733,6 +810,9 @@ def score_task_E(row: dict, gold: dict, pred: dict) -> dict:
     lead_recall = (len(headline_ents & lead_ents) / len(headline_ents)) if headline_ents else 0.0
 
     return {
+        "schema_valid": int(
+            bool(p_pred or m_pred) and not pred.get("_parse_error")
+        ),
         "entity_f1_vs_gold": entity_f1,
         "hallucination_rate": hallucination_rate,
         "coverage_of_source_entities": coverage,
@@ -771,16 +851,27 @@ def _devanagari_share(text: str) -> float:
 
 
 def _pick_F_branch(pred: dict, language: str) -> str:
-    """Task F output is {english, hindi}. Score against the language-matched
-    branch; fall back to whichever branch is non-empty if model produced only
-    one (format_warn fallback in parse_output).
+    """Pick the Task F branch to score against the (English-only) gold
+    explanation.
+
+    Task F output is `{"english": ..., "hindi": ...}` (bilingual production
+    prompt). The Task-A gold `explanation` field in our eval set is **English
+    only** (data audit confirmed this even for `language=hi` rows). So:
+
+    - Score the ENGLISH branch against gold for both en + hi rows.
+    - The Hindi branch is evaluated separately via the
+      `hindi_branch_devanagari_share` + `hindi_branch_code_mixing_rate` columns
+      below — those measure bilingual *format compliance*, not faithfulness vs
+      gold.
+
+    The `language` argument is retained in the signature for symmetry with the
+    batched scorers but does not affect the branch choice.
     """
     en = (pred.get("english") or "").strip()
     hi = (pred.get("hindi") or "").strip()
-    if language == "hi" and hi:
-        return hi
-    if language == "en" and en:
-        return en
+    # Prefer English (gold is English). Fall back to Hindi only if the
+    # model truly produced no English — better than scoring an empty string,
+    # though this is an off-spec output and will show up in schema_valid=0.
     return en or hi
 
 
@@ -834,10 +925,15 @@ def score_task_F(row: dict, gold: dict, pred: dict) -> dict:
         "citation_accuracy": _citation_accuracy(branch),
         "fact_lookup_precision": _fact_lookup_precision(branch),
         "word_count_adherence": wc_adherence,
-        "hindi_code_mixing_rate": (
+        # NB: renamed from `hindi_code_mixing_rate` to disambiguate from Task B
+        # — Task B measures Hindi code-mixing on the SINGLE answer string of a
+        # Hindi-language eval row; Task F measures it on the model's Hindi
+        # OUTPUT BRANCH regardless of input language (production prompt is
+        # bilingual by design).
+        "hindi_branch_code_mixing_rate": (
             (1.0 - _devanagari_share(hi_pred)) if hi_pred else np.nan
         ),
-        "hindi_devanagari_share": _devanagari_share(hi_pred) if hi_pred else np.nan,
+        "hindi_branch_devanagari_share": _devanagari_share(hi_pred) if hi_pred else np.nan,
         "english_word_count": _word_count(en_pred),
         "hindi_word_count": _word_count(hi_pred),
     }
@@ -851,7 +947,9 @@ def _directive_class(question: str) -> str:
     q = (question or "").lower()
     for cls in ("high", "low"):
         for v in DIRECTIVE_VERBS[cls]:
-            if re.search(rf"\b{v}\b", q):
+            # re.escape v defensively — current verbs have no metachars but
+            # protects against future additions like "evaluate (critically)".
+            if re.search(rf"\b{re.escape(v)}\b", q):
                 return cls
     return "unknown"
 
@@ -863,8 +961,25 @@ def _causal_marker_density(text: str) -> float:
         return 0.0
     pat = r"\b(because|therefore|hence|thus|since|however|whereas|although|" \
           r"क्योंकि|इसलिए|परंतु|लेकिन)\b"
-    hits = re.findall(pat, text, flags=re.IGNORECASE)
+    hits = re.findall(pat, text, flags=re.IGNORECASE | re.UNICODE)
     return 100.0 * len(hits) / max(1, _word_count(text))
+
+
+def _directive_density_score(d_pred: float, d_gold: float) -> float:
+    """Symmetric "how close is pred density to gold density" score in [0, 1].
+
+    Better than `min(2.0, d_pred / d_gold)` which clipped asymmetrically and
+    biased the mean upward when models over-marked. New formula:
+        score = 1 - |log(d_pred / d_gold)| / log(3),  clipped to [0, 1]
+    so a ratio of 1.0 → 1.0; ratio of 3.0 or 1/3 → 0.0; ratio of 2.0 → ≈0.37.
+    Treats over- and under-marking symmetrically in log space.
+    """
+    if d_gold <= 0 or d_pred <= 0:
+        # No causal markers in either generated OR gold → undefined.
+        # Returning NaN here lets the aggregator skip these rows cleanly.
+        return float("nan")
+    ratio = d_pred / d_gold
+    return max(0.0, 1.0 - abs(np.log(ratio)) / np.log(3.0))
 
 
 def score_task_G(row: dict, gold: dict, pred: dict) -> dict:
@@ -892,15 +1007,11 @@ def score_task_G(row: dict, gold: dict, pred: dict) -> dict:
         # else 0.0 (pred over-extends beyond what gold required).
         dim_coverage = 1.0 if not touched_pred else 0.0
 
-    # Directive-conditioned discourse density (exploratory).
-    # Score = density(generated) / density(gold), clipped — closer to 1.0 is
-    # better calibrated to the directive expectation.
+    # Directive-conditioned discourse density (exploratory). Symmetric score
+    # in [0, 1]: 1.0 = pred density matches gold; 0.0 = off by ≥3× either way.
     d_pred = _causal_marker_density(cand)
     d_gold = _causal_marker_density(ref)
-    if d_gold > 0:
-        directive_density_ratio = min(2.0, d_pred / d_gold)
-    else:
-        directive_density_ratio = np.nan
+    directive_density_score = _directive_density_score(d_pred, d_gold)
 
     return {
         **base,
@@ -909,7 +1020,7 @@ def score_task_G(row: dict, gold: dict, pred: dict) -> dict:
         "dimensions_touched_pred": len(touched_pred),
         "dimensions_touched_gold": len(touched_ref),
         "directive_class": _directive_class(question),
-        "directive_density_ratio": directive_density_ratio,
+        "directive_density_score": directive_density_score,
     }
 
 
@@ -1095,8 +1206,14 @@ def main() -> int:
     print(f"[load] {len(df):,} predictions from {args.predictions}")
 
     # Per-row metrics (regex/spaCy/textstat — cheap, sequential is fine).
+    # We track the SOURCE df-index of each scored row so the batched metrics
+    # (computed against the full df with df.iterrows()) can be reattached
+    # by index — not by position. Position-based alignment is unsafe if any
+    # predictions are skipped (unknown task without scorer).
     rows = []
-    for r in df.to_dict("records"):
+    source_indices: list[int] = []
+    df_reset = df.reset_index(drop=True)
+    for i, r in enumerate(df_reset.to_dict("records")):
         task = r["task"]
         scorer = SCORERS.get(task)
         if scorer is None:
@@ -1129,15 +1246,20 @@ def main() -> int:
             "format_valid": _format_valid(task, pred, m),
             **m,
         })
+        source_indices.append(i)
     scores = pd.DataFrame(rows)
     print(f"[per-row] {len(scores):,} rows scored")
 
     # Batched text-pair metrics — BERTScore is the slow one (loads model once).
+    # Reattach by SOURCE df-index so any skipped (no-scorer) rows don't shift
+    # the alignment.
     print("[batched] computing BERTScore / ROUGE-L / chrF …")
-    batched = _batch_text_pairs(df)
+    batched = _batch_text_pairs(df_reset)
     for col, vals in batched.items():
-        if any(not (isinstance(v, float) and np.isnan(v)) for v in vals):
-            scores[col] = vals[:len(scores)]
+        # Pull values at the *source* indices we kept in `rows`.
+        aligned = [vals[i] for i in source_indices]
+        if any(not (isinstance(v, float) and np.isnan(v)) for v in aligned):
+            scores[col] = aligned
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     scores.to_parquet(args.out, index=False, compression="snappy")

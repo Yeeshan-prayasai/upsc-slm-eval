@@ -19,7 +19,30 @@ import pandas as pd
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 LETTER_RE = re.compile(r"\b[ABCD]\b")
+# Confidence parsing — see _parse_confidence below for why we explicitly
+# search the LAST 1-3 digit run in the model's response.
 INT_RE = re.compile(r"\b(\d{1,3})\b")
+
+
+def _parse_confidence(raw: str) -> int | None:
+    """Extract a 0-100 confidence integer from the model's Pass-2 response.
+
+    The confidence prompt instructs the model to "Respond with ONLY the
+    integer between 0 and 100", but Gemini sometimes echoes the prompt
+    (e.g. "On a scale of 0 to 100, I'm 85% sure"). To avoid latching onto
+    the echo's "0" or "100", we take the LAST matching integer in the
+    response — typically the actual answer.
+
+    Returns the parsed confidence clamped to [0, 100], or None if no usable
+    integer is found. (Earlier behavior of defaulting to 50 silently biased
+    Brier loss toward 0.25 for all parse failures.)
+    """
+    if not raw:
+        return None
+    matches = INT_RE.findall(raw)
+    if not matches:
+        return None
+    return max(0, min(100, int(matches[-1])))  # LAST match — see docstring
 GEMINI_FLASH_IN_USD_PER_M = 0.50
 GEMINI_FLASH_OUT_USD_PER_M = 3.00
 # Task A/B/C/E are FT-corpus tasks; F/G are production-prompt capability tests
@@ -268,9 +291,25 @@ def parse_output(task: str, raw: str) -> dict:
         return {"_parse_error": True}
     if task == "A":
         ans = parsed.get("answer")
+        # Normalize whatever the model emitted into a single letter A/B/C/D
+        # (or None). Models occasionally return a list (`["C"]`) or null;
+        # this guards against downstream `.strip().upper()` crashes in
+        # score_task_A which expects a string.
+        candidate: str | None = None
         if isinstance(ans, str):
-            m = LETTER_RE.search(ans.upper())
+            candidate = ans
+        elif isinstance(ans, list) and ans:
+            head = ans[0]
+            if isinstance(head, str):
+                candidate = head
+        elif isinstance(ans, (int, float)) and 0 <= int(ans) <= 3:
+            # Some models index options 0..3 instead of A..D.
+            candidate = "ABCD"[int(ans)]
+        if candidate is not None:
+            m = LETTER_RE.search(candidate.upper())
             parsed["answer"] = m.group(0) if m else None
+        else:
+            parsed["answer"] = None
     return parsed
 
 
@@ -302,8 +341,13 @@ class MLXLoRARunner:
             return prompt
 
     def _generate(self, prompt: str, max_tokens: int) -> Prediction:
-        full = self._render(prompt)
+        # Start the wall-clock timer BEFORE the chat-template render so
+        # latency_ms is a fair comparison against the Gemini runner (which
+        # ships the prompt as a single string to the API and includes any
+        # server-side templating in its measured time). Excluding the render
+        # systematically under-reported MLX latency by 1-5 ms per call.
         t0 = time.perf_counter()
+        full = self._render(prompt)
         ttft_ms = 0
         out_parts: list[str] = []
         in_tokens = 0
@@ -326,10 +370,12 @@ class MLXLoRARunner:
         pred.parsed = parse_output(task, pred.raw)
         return pred
 
-    def confidence(self, item: EvalItem, letter: str) -> int:
-        p = self._generate(build_confidence_prompt(item, letter), max_tokens=8)
-        m = INT_RE.search(p.raw)
-        return max(0, min(100, int(m.group(1)))) if m else 50
+    def confidence(self, item: EvalItem, letter: str) -> int | None:
+        """Returns a 0-100 integer confidence, or None on parse failure.
+        Caller records None so score_task_A's `conf = float(raw)/100` branch
+        treats it as missing rather than averaging in a silent 0.5 fake."""
+        p = self._generate(build_confidence_prompt(item, letter), max_tokens=16)
+        return _parse_confidence(p.raw)
 
 
 class GeminiRunner:
@@ -387,10 +433,12 @@ class GeminiRunner:
         pred.parsed = parse_output(task, pred.raw)
         return pred
 
-    def confidence(self, item: EvalItem, letter: str) -> int:
-        p = self._generate(build_confidence_prompt(item, letter), max_tokens=8)
-        m = INT_RE.search(p.raw)
-        return max(0, min(100, int(m.group(1)))) if m else 50
+    def confidence(self, item: EvalItem, letter: str) -> int | None:
+        """Returns a 0-100 integer confidence, or None on parse failure.
+        Caller records None so score_task_A's `conf = float(raw)/100` branch
+        treats it as missing rather than averaging in a silent 0.5 fake."""
+        p = self._generate(build_confidence_prompt(item, letter), max_tokens=16)
+        return _parse_confidence(p.raw)
 
 
 class GeminiZeroShotRunner(GeminiRunner):

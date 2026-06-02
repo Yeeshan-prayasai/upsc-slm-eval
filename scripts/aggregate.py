@@ -94,13 +94,29 @@ def _position_bias(letters: pd.Series) -> tuple[float, float]:
     return (float(chi2), float(p))
 
 
+def _question_stem(qid: str) -> str:
+    """Strip the trailing `:en` or `:hi` language suffix from a question_id
+    to get the language-independent stem. Uses rsplit on the LAST colon
+    rather than a regex anchored at end-of-string — robust against ids that
+    contain other colon-separated segments (which the original eval-set ids
+    do: e.g. `ai:003fad5b-...-...:hi`)."""
+    if ":" in qid and qid.rsplit(":", 1)[1] in ("en", "hi"):
+        return qid.rsplit(":", 1)[0]
+    return qid
+
+
 def _bilingual_delta(df: pd.DataFrame) -> dict:
-    """Task A: per-question-stem accuracy delta between en and hi."""
+    """Task A: per-question-stem accuracy delta between en and hi.
+
+    Reports both a paired t-test (acceptable on 0/1 data) AND McNemar's
+    test (the textbook choice for paired binary outcomes). McNemar tests
+    the null that discordant en/hi pairs are evenly split; small p means
+    the model is systematically better in one language.
+    """
     a = df[df["task"] == "A"].copy()
     if a.empty:
         return {}
-    # pair en/hi rows by stripping the language suffix on question_id
-    a["stem"] = a["question_id"].str.replace(r":(en|hi)$", "", regex=True)
+    a["stem"] = a["question_id"].map(_question_stem)
     pairs = (
         a.groupby(["condition", "stem", "language"])["is_correct"].first()
          .unstack("language")
@@ -114,14 +130,34 @@ def _bilingual_delta(df: pd.DataFrame) -> dict:
         if len(en) < 5:
             continue
         diff = en - hi
-        t, p = stats.ttest_rel(en, hi)
+        t, p_t = stats.ttest_rel(en, hi)
+        # McNemar's exact test on the 2x2 (en_correct × hi_correct) table.
+        # b = en_correct ∧ hi_wrong; c = en_wrong ∧ hi_correct.
+        b = int(((en == 1) & (hi == 0)).sum())
+        c = int(((en == 0) & (hi == 1)).sum())
+        if b + c == 0:
+            mcnemar_p = 1.0  # no discordant pairs → no evidence of asymmetry
+        else:
+            # Exact binomial-based McNemar (preferred when b+c is small).
+            try:
+                from statsmodels.stats.contingency_tables import mcnemar
+                mcnemar_p = float(
+                    mcnemar(np.array([[0, b], [c, 0]]), exact=True).pvalue
+                )
+            except Exception:
+                # Fallback: normal-approximation chi-square.
+                stat = ((abs(b - c) - 1) ** 2) / (b + c)
+                mcnemar_p = float(1 - stats.chi2.cdf(stat, df=1))
         out[cond] = {
             "n_paired": int(len(en)),
+            "n_discordant_en_only_correct": b,
+            "n_discordant_hi_only_correct": c,
             "acc_en": float(en.mean()),
             "acc_hi": float(hi.mean()),
             "delta_en_minus_hi": float(diff.mean()),
             "paired_t": float(t),
-            "p_value": float(p),
+            "p_value_t": float(p_t),
+            "mcnemar_p_value": mcnemar_p,
         }
     return out
 

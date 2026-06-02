@@ -102,10 +102,21 @@ def _pairwise(df: pd.DataFrame, stratify_by: str | None = None) -> pd.DataFrame:
 
     When `stratify_by` is set (e.g. 'language'), tests are run within each
     stratum so per-language and per-paper splits are produced separately.
+
+    Surfaces a one-time warning if the (task, question_id, condition) tuple
+    is non-unique — that signals a duplicate prediction (e.g. accidental
+    re-run that wasn't deduped) and would cause the pivot's `aggfunc="first"`
+    to silently drop later occurrences.
     """
     conditions = sorted(df["condition"].unique())
     metric_cols = [c for c in df.columns
                    if c not in NON_METRIC and pd.api.types.is_numeric_dtype(df[c])]
+    dup_mask = df.duplicated(subset=["task", "question_id", "condition"], keep=False)
+    if dup_mask.any():
+        n_dup = int(dup_mask.sum())
+        print(f"[WARN] {n_dup} duplicate (task, question_id, condition) rows "
+              f"detected — pivot will keep first only. Dedupe the scores parquet "
+              f"to avoid silent data loss.")
     rows = []
     group_cols = ["task"] + ([stratify_by] if stratify_by else [])
     for keys, t_sub in df.groupby(group_cols):
@@ -220,7 +231,15 @@ def _stratum_heatmap(df: pd.DataFrame, c3_id: str = "C3") -> pd.DataFrame:
 
 
 def _apply_fdr(df: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
-    """Add BH-FDR-adjusted p-values across the full test family."""
+    """Add BH-FDR-adjusted p-values across the full test family.
+
+    A comparison is flagged `significant_fdr=True` only when BOTH the
+    paired t-test AND the Wilcoxon signed-rank test agree at q=alpha.
+    Requiring agreement guards against:
+     - false positives from t-test on heavy-tailed metrics (e.g. brier_loss
+       where outliers inflate t-stat magnitude)
+     - false negatives from Wilcoxon on near-Gaussian metrics with ties
+    """
     df = df.copy()
     if df.empty or "paired_t_p" not in df.columns:
         df["paired_t_p_fdr"] = pd.Series(dtype=float)
@@ -238,7 +257,13 @@ def _apply_fdr(df: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
                                      method="fdr_bh")
     df.loc[ok, "paired_t_p_fdr"] = p_t_adj
     df.loc[ok, "wilcoxon_p_fdr"] = p_w_adj
-    df["significant_fdr"] = (df["paired_t_p_fdr"] < alpha).fillna(False)
+    sig_t = (df["paired_t_p_fdr"] < alpha).fillna(False)
+    sig_w = (df["wilcoxon_p_fdr"] < alpha).fillna(False)
+    df["significant_fdr"] = sig_t & sig_w
+    # Surface the single-test results too so downstream readers can see
+    # whether a comparison failed agreement (one test fires, the other doesn't).
+    df["significant_t_only"] = sig_t & ~sig_w
+    df["significant_w_only"] = sig_w & ~sig_t
     return df
 
 

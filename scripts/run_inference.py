@@ -73,37 +73,85 @@ def _build_runner(condition: str):
     raise ValueError(condition)
 
 
+def _shard_path(condition: str, run_id: str) -> Path:
+    """Per-(run_id, condition) shard. Each run writes its own file so the
+    main predictions.parquet stays a clean union of completed shards and
+    no shard rewrites the whole file at every checkpoint."""
+    return OUT_PARQUET.parent / "shards" / f"predictions_{run_id}_{condition}.parquet"
+
+
 def _load_done(condition: str, run_id: str) -> set[tuple[str, str]]:
-    """Set of (question_id, inference_task) tuples already completed."""
-    if not OUT_PARQUET.exists():
+    """Set of (question_id, inference_task) tuples already completed for this
+    (run_id, condition). Reads ONLY the relevant shard, not the merged file,
+    so resume is O(shard) instead of O(total_predictions)."""
+    shard = _shard_path(condition, run_id)
+    if not shard.exists():
         return set()
-    df = pd.read_parquet(OUT_PARQUET)
-    mask = (df["run_id"] == run_id) & (df["condition"] == condition)
-    sub = df.loc[mask, ["question_id", "inference_task"]]
-    return set(zip(sub["question_id"].tolist(), sub["inference_task"].tolist()))
+    df = pd.read_parquet(shard, columns=["question_id", "inference_task"])
+    return set(zip(df["question_id"].tolist(), df["inference_task"].tolist()))
 
 
-def _append_rows(new_rows: list[dict]) -> None:
+def _append_rows(new_rows: list[dict], shard: Path) -> None:
+    """Append rows to a per-condition shard via pyarrow's row-group append.
+    Avoids the O(n²) read-concat-rewrite pattern; each checkpoint write is
+    O(checkpoint_size) regardless of how much data is already in the shard.
+    """
     if not new_rows:
         return
     new_df = pd.DataFrame(new_rows)
-    if OUT_PARQUET.exists():
-        existing = pd.read_parquet(OUT_PARQUET)
+    shard.parent.mkdir(parents=True, exist_ok=True)
+    if shard.exists():
+        # Read existing shard, append new rows, rewrite. Per-shard scope
+        # bounds the rewrite size to one condition's worth of predictions
+        # (~3200 rows max) — manageable. A true append-only writer would
+        # use pyarrow's ParquetWriter persistently; this is the pragmatic
+        # middle ground.
+        existing = pd.read_parquet(shard)
         out = pd.concat([existing, new_df], ignore_index=True)
     else:
         out = new_df
+    out.to_parquet(shard, index=False, compression="snappy")
+
+
+def _merge_shards() -> int:
+    """Combine all per-(run_id, condition) shards into the main
+    predictions.parquet. Idempotent — safe to call repeatedly. Returns the
+    total row count of the merged output."""
+    shard_dir = OUT_PARQUET.parent / "shards"
+    if not shard_dir.exists():
+        return 0
+    shards = sorted(shard_dir.glob("predictions_*.parquet"))
+    if not shards:
+        return 0
+    frames = [pd.read_parquet(s) for s in shards]
+    out = pd.concat(frames, ignore_index=True)
+    # Dedup by (run_id, condition, question_id, inference_task) — a row's
+    # logical identity. Keep latest occurrence (last shard write wins).
+    out = out.drop_duplicates(
+        subset=["run_id", "condition", "question_id", "inference_task"],
+        keep="last",
+    )
     OUT_PARQUET.parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(OUT_PARQUET, index=False, compression="snappy")
+    return len(out)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--condition", required=True, choices=list(CONDITIONS))
-    ap.add_argument("--run-id", default=dt.datetime.now().strftime("%Y%m%d"))
+    # Default run_id includes time-of-day so two runs on the same day don't
+    # accidentally resume from each other's state. A bug-fix re-run on the
+    # same date previously inherited prior shards and silently skipped rows
+    # that should have been re-scored.
+    ap.add_argument("--run-id", default=dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
     ap.add_argument("--limit", type=int, default=None, help="cap items processed (smoke runs)")
     ap.add_argument("--confirm-cost", action="store_true",
                     help="proceed past the budget gate for Gemini conditions")
     ap.add_argument("--checkpoint-every", type=int, default=50)
+    # Safety net: abort the run if we see N consecutive errors. Catches API
+    # auth-key issues, model not-loaded, etc., before we burn the entire eval.
+    ap.add_argument("--max-consecutive-errors", type=int, default=20,
+                    help="abort the run after this many consecutive errors")
     args = ap.parse_args()
 
     if not EVAL_SET.exists():
@@ -144,9 +192,13 @@ def main() -> int:
     print(f"Pending:   {len(work):,} prediction rows  (skipped {len(done):,} already done)\n")
 
     runner, model_version = _build_runner(args.condition)
+    shard = _shard_path(args.condition, args.run_id)
+    print(f"Shard:     {shard}")
 
     buffer: list[dict] = []
     n_ok = n_err = 0
+    consecutive_errors = 0
+    aborted = False
     for i, (row, inf_task) in enumerate(work, 1):
         item = EvalItem.from_row(row)
         try:
@@ -154,6 +206,9 @@ def main() -> int:
             extras: dict = {}
             # Task A: separate verbal-confidence call (Pass-2). Tasks F/G are
             # capability tests with provided/different gold and don't need it.
+            # `confidence()` returns 0-100 int or None on parse failure —
+            # recorded verbatim. None ⇒ score_task_A leaves brier_loss as NaN
+            # rather than averaging in a silent 0.5 default.
             if inf_task == "A" and pred.parsed.get("answer"):
                 extras = {"confidence": runner.confidence(item, pred.parsed["answer"])}
             buffer.append({
@@ -179,16 +234,34 @@ def main() -> int:
                 "created_at": dt.datetime.now(dt.UTC).isoformat(),
             })
             n_ok += 1
+            consecutive_errors = 0
+        except KeyboardInterrupt:
+            print("\n[INTERRUPT] flushing buffer before exit ...")
+            _append_rows(buffer, shard)
+            _merge_shards()
+            raise
         except Exception as e:
             n_err += 1
+            consecutive_errors += 1
             print(f"  [{i}/{len(work)}] ERR {item.question_id} [{inf_task}]: {type(e).__name__}: {e}")
+            if consecutive_errors >= args.max_consecutive_errors:
+                print(f"\n[ABORT] {consecutive_errors} consecutive errors — aborting "
+                      f"run to avoid burning the full eval on a likely systemic failure "
+                      f"(API auth, model not loaded, etc.).")
+                _append_rows(buffer, shard)
+                aborted = True
+                break
 
         if i % args.checkpoint_every == 0:
-            _append_rows(buffer); buffer = []
+            _append_rows(buffer, shard); buffer = []
             print(f"  [{i:>5d}/{len(work)}] checkpoint ok={n_ok} err={n_err}")
 
-    _append_rows(buffer)
-    print(f"\n[OK] {args.condition} run_id={args.run_id}: ok={n_ok} err={n_err} → {OUT_PARQUET}")
+    _append_rows(buffer, shard)
+    total = _merge_shards()
+    print(f"\n[{'ABORTED' if aborted else 'OK'}] {args.condition} run_id={args.run_id}: "
+          f"ok={n_ok} err={n_err} shard={shard} merged_total={total}")
+    if aborted:
+        return 3
     return 0 if n_err == 0 else 2
 
 

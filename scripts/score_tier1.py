@@ -63,10 +63,10 @@ def _format_valid(task: str, parsed: dict, metrics: dict) -> int:
     if parsed.get("_parse_error"):
         return 0
     if task == "B":
-        return int(bool((parsed.get("answer") or "").strip()))
+        return int(bool(_as_text(parsed.get("answer"))))
     if task == "E":
-        return int(bool((parsed.get("prelims_info") or "").strip())
-                   or bool((parsed.get("mains_info") or "").strip()))
+        return int(bool(_as_text(parsed.get("prelims_info")))
+                   or bool(_as_text(parsed.get("mains_info"))))
     return 1
 
 
@@ -194,6 +194,43 @@ def _parse_json(s: Any) -> dict:
         return json.loads(s)
     except json.JSONDecodeError:
         return {}
+
+
+def _as_text(val: Any) -> str:
+    """Defensive coercion of a gold/pred field to a stripped text string.
+
+    Source-of-truth JSON shapes can vary across rows: some gold explanations
+    are strings, some are lists of paragraphs, some are nested dicts (e.g.
+    `{"english": ..., "hindi": ...}` for Task-A bilingual explanations).
+    This helper returns a single stripped string regardless of input shape
+    so downstream `.strip()` / regex / tokenize calls never crash on
+    `AttributeError: 'list' object has no attribute 'strip'`.
+
+    Conversion rules:
+      None / "" / {}  → ""
+      str             → str.strip()
+      list            → join non-empty stripped parts with "\\n"
+      dict            → concat non-empty values joined by "\\n" (bilingual
+                        gold-explanation case lands here)
+      other (int/float/bool) → str(val).strip()
+    """
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val.strip()
+    if isinstance(val, list):
+        parts = [_as_text(x) for x in val]
+        return "\n".join(p for p in parts if p).strip()
+    if isinstance(val, dict):
+        # Bilingual explanation shape: {"english": "...", "hindi": "..."}.
+        # Prefer English (matches eval-set audit: gold explanations are
+        # English-only in our snapshot). Fall back to joining all string
+        # values if no English present.
+        if "english" in val:
+            return _as_text(val.get("english"))
+        parts = [_as_text(v) for v in val.values()]
+        return "\n".join(p for p in parts if p).strip()
+    return str(val).strip()
 
 
 def _tokens(text: str) -> list[str]:
@@ -407,8 +444,8 @@ def _citation_accuracy(text: str) -> float:
 
 def score_task_A(row: dict, gold: dict, pred: dict) -> dict:
     """Per-row scalars for Task A. Batched metrics (BERTScore) populated later."""
-    correct_letter = (gold.get("correct_option") or "").strip().upper()
-    pred_letter = (pred.get("answer") or "").strip().upper()
+    correct_letter = _as_text(gold.get("correct_option")).upper()
+    pred_letter = _as_text(pred.get("answer")).upper()
     pred_letter = pred_letter[:1] if pred_letter else ""
     format_fail = pred_letter not in {"A", "B", "C", "D"}
     is_correct = (not format_fail) and (pred_letter == correct_letter)
@@ -429,8 +466,8 @@ def score_task_A(row: dict, gold: dict, pred: dict) -> dict:
         conf = None
     brier = (conf - (1.0 if is_correct else 0.0)) ** 2 if conf is not None else np.nan
 
-    expl_pred = (pred.get("explanation") or "").strip()
-    expl_gold = (gold.get("explanation") or "").strip()
+    expl_pred = _as_text(pred.get("explanation"))
+    expl_gold = _as_text(gold.get("explanation"))
 
     entity_f1 = 0.0
     if row.get("language") == "en" and expl_pred and expl_gold:
@@ -539,8 +576,8 @@ def _word_count_adherence(actual: int, target: int) -> float:
 
 
 def score_task_B(row: dict, gold: dict, pred: dict) -> dict:
-    cand = (pred.get("answer") or "").strip()
-    ref = (gold.get("model_answer") or "").strip()
+    cand = _as_text(pred.get("answer"))
+    ref = _as_text(gold.get("model_answer"))
 
     target_wc = int(gold.get("word_count") or 250)
     wc_cand = _word_count(cand)
@@ -760,11 +797,11 @@ def _compression_score(cand_tokens: int, src_tokens: int) -> float:
 
 
 def score_task_E(row: dict, gold: dict, pred: dict) -> dict:
-    p_pred = (pred.get("prelims_info") or "").strip()
-    m_pred = (pred.get("mains_info") or "").strip()
-    p_gold = (gold.get("prelims_info") or "").strip()
-    m_gold = (gold.get("mains_info") or "").strip()
-    source = (gold.get("source_text") or "").strip()
+    p_pred = _as_text(pred.get("prelims_info"))
+    m_pred = _as_text(pred.get("mains_info"))
+    p_gold = _as_text(gold.get("prelims_info"))
+    m_gold = _as_text(gold.get("mains_info"))
+    source = _as_text(gold.get("source_text"))
 
     # Entity-F1 vs gold mains_info; hallucination = ents in m_pred not in source.
     ents_pred = _entities_en(m_pred)
@@ -867,8 +904,8 @@ def _pick_F_branch(pred: dict, language: str) -> str:
     The `language` argument is retained in the signature for symmetry with the
     batched scorers but does not affect the branch choice.
     """
-    en = (pred.get("english") or "").strip()
-    hi = (pred.get("hindi") or "").strip()
+    en = _as_text(pred.get("english"))
+    hi = _as_text(pred.get("hindi"))
     # Prefer English (gold is English). Fall back to Hindi only if the
     # model truly produced no English — better than scoring an empty string,
     # though this is an off-spec output and will show up in schema_valid=0.
@@ -884,10 +921,10 @@ def score_task_F(row: dict, gold: dict, pred: dict) -> dict:
     Hindi reference exists; this is format compliance only).
     """
     language = row.get("language") or "en"
-    en_pred = (pred.get("english") or "").strip()
-    hi_pred = (pred.get("hindi") or "").strip()
-    expl_gold = (gold.get("explanation") or "").strip()
-    correct_letter = (gold.get("correct_option") or "").strip().upper()
+    en_pred = _as_text(pred.get("english"))
+    hi_pred = _as_text(pred.get("hindi"))
+    expl_gold = _as_text(gold.get("explanation"))
+    correct_letter = _as_text(gold.get("correct_option")).upper()
 
     schema_valid = int(bool(en_pred) and bool(hi_pred) and not pred.get("_parse_error"))
 
@@ -993,9 +1030,9 @@ def score_task_G(row: dict, gold: dict, pred: dict) -> dict:
     # Reuse Task B's metrics directly — gold field shapes are identical.
     base = score_task_B(row, gold, pred)
 
-    cand = (pred.get("answer") or "").strip()
-    ref = (gold.get("model_answer") or "").strip()
-    question = (gold.get("question") or "").strip()
+    cand = _as_text(pred.get("answer"))
+    ref = _as_text(gold.get("model_answer"))
+    question = _as_text(gold.get("question"))
 
     # Dimension-keyword coverage (PESEE lexicon)
     touched_pred = _dimensions_touched(cand)
@@ -1069,8 +1106,8 @@ def _batch_text_pairs(df: pd.DataFrame) -> dict[str, list[float]]:
                 continue
             gold = _parse_json(row["gold_payload"])
             pred = _parse_json(row["prediction"])
-            expl_p = (pred.get("explanation") or "").strip()
-            expl_g = (gold.get("explanation") or "").strip()
+            expl_p = _as_text(pred.get("explanation"))
+            expl_g = _as_text(gold.get("explanation"))
             if not expl_p or not expl_g:
                 continue
             idxs.append(i)
@@ -1090,7 +1127,7 @@ def _batch_text_pairs(df: pd.DataFrame) -> dict[str, list[float]]:
             gold = _parse_json(row["gold_payload"])
             pred = _parse_json(row["prediction"])
             branch = _pick_F_branch(pred, lang)
-            expl_g = (gold.get("explanation") or "").strip()
+            expl_g = _as_text(gold.get("explanation"))
             if not branch.strip() or not expl_g:
                 continue
             idxs.append(i)
@@ -1109,8 +1146,8 @@ def _batch_text_pairs(df: pd.DataFrame) -> dict[str, list[float]]:
                 continue
             gold = _parse_json(row["gold_payload"])
             pred = _parse_json(row["prediction"])
-            cand = (pred.get("answer") or "").strip()
-            ref = (gold.get("model_answer") or "").strip()
+            cand = _as_text(pred.get("answer"))
+            ref = _as_text(gold.get("model_answer"))
             if not cand or not ref:
                 continue
             idxs.append(i)
@@ -1128,8 +1165,8 @@ def _batch_text_pairs(df: pd.DataFrame) -> dict[str, list[float]]:
                 continue
             gold = _parse_json(row["gold_payload"])
             pred = _parse_json(row["prediction"])
-            cand = (pred.get("answer") or "").strip()
-            ref = (gold.get("model_answer") or "").strip()
+            cand = _as_text(pred.get("answer"))
+            ref = _as_text(gold.get("model_answer"))
             if not cand or not ref:
                 continue
             idxs.append(i)

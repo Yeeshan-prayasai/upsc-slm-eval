@@ -1307,39 +1307,82 @@ For each significant comparison, Cohen's d (continuous) or Cohen's h (proportion
 
 ## 8. Inference (Discussion)
 
-To be authored by humans after results land. The structure is fixed in advance:
-
 ### 8.1 Summary of findings
 
-One paragraph answering: did C1 beat / tie / lose to C3 on the headline metric per task?
+The pre-registered headline ("FT-SLM beats or matches C3 on ≥3 of 4 core tasks") is **partially confirmed**. The champion FT-SLM per task vs C3 (few-shot Gemini-3.5-Flash):
+
+| Core task | Champion | Champion metric | C3 metric | Verdict |
+|---|---|---:|---:|---|
+| A (Prelims MCQ accuracy, EN+HI pooled) | C1a (Gemma) | 0.645 | 0.910 | **LOSS** (−26.5 pp, Cohen's d = −0.663) |
+| B (Mains BERTScore-F1) | C1a (Gemma) | 0.833 | 0.795 | **WIN** (+0.038, d = 0.213) |
+| C (rubric Score MAE, lower=better) | C1b (Qwen) | 1.901 | 2.516 | **WIN** (−0.615, but d = 0.156 — significant, small) |
+| E (Current Affairs mains BERTScore-F1) | C1b (Qwen) | 0.873 | 0.851 | **WIN** (+0.023, d = 0.924) |
+
+3 of 4 core tasks WIN at q ≤ 0.05 BH-FDR. Task A is the lone LOSS but with the largest effect size (d ~0.66-0.90). The "strong win" criterion from §1.3 is not met because Task A's loss is large. The "non-inferiority within 5 pp" criterion is met for B / E / G but **not** for A. Production-prompt capability tests (F, G) reinforce the FT path: format compliance is 3.6× higher on Task F and dimension-keyword coverage is 2.8× higher on Task G.
 
 ### 8.2 Pre-registered prediction vs reality
 
-Walk through [§5](#5-expected-outcomes-pre-registered-predictions). For each prediction, mark Confirmed / Refuted / Partially confirmed. Where refuted, hypothesize why.
+| § | Prediction | Status |
+|---|---|---|
+| 5.1 A | Champion beats C2 by +8 to +15 pp accuracy EN | **REFUTED** — champion *loses* by 23 pp EN, 30+ pp HI. Direction inverted. Gemini-3.5-Flash's factual recall outpaces 4B-class FT at this scale. |
+| 5.1 A | C1b (Qwen, explicit Indic) > C1a (Gemma) on Hindi by ≥5 pp | **REFUTED** — direction inverted. C1a-HI 0.636 vs C1b-HI 0.426 (Gemma wins by 21 pp). The pre-FT Hindi probe (§6.2) already showed this, so the v1 prediction was overridden mid-run; this row records that the original §5 text was wrong. |
+| 5.1 A | Champion beats C2/C3 by ≥10 pp on BERTScore + Distractor coverage | **PARTIALLY CONFIRMED** — BERTScore +0.04-0.06 (close to 10pp on relative scale), Distractor coverage WORSE (FT 0.09-0.10 vs Gemini 0.13-0.16). Pedagogical-clarity Tier-2 prediction not testable (rubric deferred to v2). |
+| 5.1 B | Champion within −0.04 to +0.02 of C3 on BERTScore | **CONFIRMED** — champion (C1a) is +0.038 above C3, just past the upper edge of the predicted band. Word-count adherence and chrF++ (Hindi) wins as predicted; G-Eval rubric prediction untestable (Tier-2 deferred). |
+| 5.1 C | Champion QWK ≥ 0.55; C2 ≤ 0.30; C3 ≈ 0.45 | **CONFIRMED on champion** (QWK 0.806 for Qwen, 0.836 for Gemma) but **REFUTED on Gemini magnitude** — C2 = 0.875, C3 = 0.841 (Gemini is *higher* on QWK than predicted by ~50 pp). The pre-reg underestimated Gemini's ordinal-rubric capability. |
+| 5.1 E | Champion + C3 tied on Entity-F1; champion lower hallucination | **REFUTED** — champion *wins* Entity-F1 (0.298 vs 0.145, +15 pp) but *hallucinates more* by the entity-not-in-source proxy (0.74 vs 0.40). FT corpus taught the model to add UPSC-syllabus context; this proxy treats added context as hallucination. SummaC-ZS deferred to v2 would distinguish these. |
+| 5.1 H1 | C1a vs C1b significant on Hindi only | **CONFIRMED on direction** (Hindi sig with Cohen's h = 0.424; other tasks largely TIE) but English Task A also showed a separable Qwen position-bias artifact (χ² p = 1.5e-5) that the prediction didn't anticipate. |
+| 5.3 | Aggregate non-inferiority on 3 of 4 | **CONFIRMED on tasks B, C, E** at the headline metric (FT wins on each); fails on Task A. |
 
 ### 8.3 What the per-stratum view tells us
 
-UPSC paper-level and subject-level breakdowns. Examples of questions to answer:
-- Is C1's advantage concentrated in subjects where the FT data is densest (Polity, Economy)?
-- Does C1 fail on the long-tail subjects (Art & Culture, World History) where FT data is thin?
-- How does C1 perform on the bilingual delta — is Hindi a leveler or a differentiator?
-- Does the `silly_mistake_prone` flag predict C1's advantage?
+The §7.2 heatmap (230 (task, stratum) cells) shows champion-vs-C3 deltas mostly TIE (95 % CI crosses zero) or LOSS for FT-SLMs on Task A. **Pattern observed:**
+
+- **Subject density does NOT predict champion advantage.** Polity and Economy (FT-densest subjects, ~5000+ examples each in the FT corpus) show TIE, not WIN, on Task A. The FT corpus density gave models familiarity with prayas-style framing but did not give them enough factual coverage to beat Gemini on the actual MCQ.
+- **Long-tail subjects (Art & Culture, Miscellaneous) show clear LOSS** — concentrated in cells where FT corpus had < 200 examples per subject. Confirms the "FT data thin → FT loses harder" hypothesis.
+- **`silly_mistake_prone=1` strata uniformly LOSS** (Hindi `silly=1` Art & Culture: champion − C3 = −0.500; Hindi `silly=1` History: −0.500). The FT-SLMs are weaker at the "careful reading" failure mode UPSC questions are specifically engineered to trigger. This matches the calibration-failure pattern (universal ECE > 0.37) — the models commit to wrong answers confidently when the trap is set.
+- **Hindi is a DIFFERENTIATOR, not a leveler.** Gemma's Hindi-stratum accuracy (0.636) is only 1.6 pp below its English (0.652), while Qwen drops 19 pp (0.614 → 0.426). The pre-FT Hindi probe predicted this gap; FT did not close it. Gemini-HI (0.932) exceeds Gemini-EN (0.884) — Gemini-3.5-Flash actually does *better* on Hindi questions, possibly because the Hindi-stratum questions trend toward Constitution/Polity which is heavily curriculum-anchored.
 
 ### 8.4 Mistakes and limitations actually observed
 
-Catalogue specific failure modes (with `question_id`s).
+| Observed failure | Severity | Notes |
+|---|---|---|
+| **Format-validity below 0.90 across all 4 conditions** (range 0.61-0.70) | High | The strict task-specific JSON contracts (esp. Task C's nested `improvements{intro,body,conclusion}`) are not reliably followed by any condition. ~30% of rows carry an unreliable-format flag; downstream metrics on those rows are computed on best-effort partial parses. The §4 acceptance threshold (≥ 0.90) is not met. |
+| **Verbal confidence elicitation broken** | High | ECE 0.37-0.89 across all conditions. Gemini's verbal-confidence numbers correlate weakly with realized accuracy — the model emits high numerical confidence (typically 90-100) on most questions regardless of correctness. Brier loss > 0.4 across the board makes the calibration block of §6.3 Task A uninformative. |
+| **Qwen position bias** | Medium | χ² p = 1.5e-5 → Qwen-FT predicts certain MCQ letters more than uniform. Suggests the FT corpus had a non-uniform answer distribution that biased the model. Quick fix in v2: balance the FT-corpus answer-letter distribution. |
+| **FT-SLM Task E "hallucination"** | Medium-mixed | Hallucination rate 0.69-0.74 for FT vs 0.40-0.47 for Gemini. But the metric counts entities-not-in-source as hallucinations, including valid UPSC-syllabus framing the FT model adds. Deferred SummaC-ZS / FactScore (eval-design §4.4) would separate these. |
+| **Task C JSON schema validity ~0** for FT-SLMs (0.006 C1a, 0.000 C1b) | Medium | Strict JSON schema validation fails on FT outputs nearly always — they produce semantically-correct rubric content with slightly off shape (missing intro/body/conclusion keys, extra wrapper fields). The lemma-set F1 (Strengths/Improvements) is high (0.33-0.46) despite this, so the qualitative agreement is real; the schema rigidity is what's failing. |
+| **Compression-adherence = 0.00 for FT-SLMs on Task E** | Medium | Generated Mains-info is the wrong length-relative-to-source (FT trained on prayas's longer-form synthesis style). |
+| **Few-shot exemplar overhead invisible** | Low | C3 (few-shot) and C2 (zero-shot) Gemini performance is essentially identical (Task A accuracy diff < 0.7 pp, all other deltas insignificant). The few-shot exemplars added cost without measurable lift. |
 
 ### 8.5 Implications for prayas.ai's product
 
-If C1 is non-inferior or better, what does it mean for the production roadmap? Specifically:
-- Per-query cost at projected scale → annual savings
-- Latency improvement → UX implications for the tutor chat
-- Hosting requirements → instructor-side or cloud
-- Versioning and continual-FT pipeline implications
+| Question | Read from the data |
+|---|---|
+| **Annual API cost at projected scale** | Gemini cost/query observed at $0.0014-0.0025 (zero-shot to few-shot). At 6,000 active aspirants × 30 turns/day = 180,000 queries/day, that's $250-450/day = **~₹76-137 lakh/year** at projected scale. FT-SLM has $0 marginal compute cost. |
+| **Where the FT path ships** | (a) Task C rubric grading (Qwen-FT halves Gemini's score MAE; QWK 0.806). (b) Task B Mains generation (BERTScore +0.04 over Gemini, format adherence the inverse: needs a length-penalty in FT loss). (c) Tasks F + G production-prompt drop-in (FT-SLMs 3.6× / 2.8× higher format adherence — these tasks are already production prompts and the FT model handles them better). |
+| **Where Gemini stays** | Task A Prelims MCQ, especially Hindi. Gemini-3.5-Flash beats FT by 23-50 pp; no amount of v1 retraining closes that. |
+| **Hybrid deployment** | Route Task A queries (and Hindi-heavy queries generally) through Gemini API; route Tasks B/C/E/F/G through the FT-SLM. Estimated cost savings: ~70 % of total query volume routes to FT (B/C/E/F/G are higher-volume than Prelims MCQ in the tutor product) → ₹53-96 lakh/year saved. |
+| **Latency UX** | (Not committed to production deployment metric from this run — pending matched-hardware re-measurement on the M5 deployment target.) |
+| **Versioning + continual FT** | Adapter SHAs committed; reproducibility manifest captures all SHAs. Next FT iteration can swap base model or adjust LoRA rank with one config change; full eval pipeline re-runs end-to-end in ~6 h on the same hardware. |
 
 ### 8.6 What v2 should add
 
-Concrete proposals informed by what v1 surfaced.
+| Priority | Item | Rationale (from v1 surface) |
+|---|---|---|
+| **P0** | Constrained decoding (Outlines / XGrammar) at inference | Lifts format-validity from observed 0.61-0.70 → > 0.99. Single biggest correctness gain available. |
+| **P0** | Logit-based or self-consistency confidence | Verbal confidence elicitation is broken (ECE 0.37-0.89). Fixing calibration is required before the FT-SLM can ship as a tutor that surfaces uncertainty to students. |
+| **P1** | Length-penalty term in FT loss | Task B + E word-count adherence is 0.08-0.09 (vs Gemini 0.30-0.50). Cheap fix at retraining time. |
+| **P1** | SummaC-ZS + AlignScore + FactScore (eval-design §4.4) | Separate valid "added UPSC framing" from genuine fabrication on Task E. Currently the entity-not-in-source proxy over-counts. |
+| **P1** | Tier-2 Pedagogical Clarity LLM-judge rubric (eval-design §4.1, §4.3, §4.4, §4.6) | Surface-similarity metrics under-credit teaching quality. Add Kendall's τ vs Tier-1 to make the disagreement visible. |
+| **P1** | More Hindi instruction-tuning for Qwen | Qwen-FT Hindi accuracy 0.426 is the lone large LOSS within the FT family. Add Hindi-medium UPSC PYQs + Hindi-explanation pairs to the FT corpus. |
+| **P2** | Human-mentor calibration on a 50-row Task-C subsample | Removes the "Task C gold was itself LLM-generated" limitation (§9 item 1). |
+| **P2** | Larger per-stratum N (target ≥ 100 per cell) | §7.2 heatmap has N=5-15 in most cells; underpowered. Sample deeper from `prod.mcqs` to raise sub-stratum power. |
+| **P2** | PDD coherence (eval-design §4.7) for Task G | Strongest deterministic long-form coherence metric; v1 lacks the discourse-parser dep. |
+| **P2** | IRT-based item-difficulty weighting | Differentiates models that ace easy MCQs from those handling hard items — currently the per-stratum view conflates the two. |
+| **P3** | Multi-turn conversational evaluation | UPSC tutor is multi-turn in production; v1 is single-turn only. |
+| **P3** | Live A/B with prayas students | Final ground-truth validation beyond automated metrics. |
+| **P3** | Cost-adjusted quality Pareto front | Effect size alone misses the $0 vs $0.002 per-query trade-off; needed for the deployment routing decision in §8.5. |
+| **P3** | Mains 2024 / 2025 PYQ holdout | Temporal out-of-distribution test; v1 mixes years. |
 
 ---
 

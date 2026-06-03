@@ -1,0 +1,5 @@
+[load] 12,800 scored rows from /home/ubuntu/upsc-slm-eval/results/scores_tier1.parquet
+
+[OK] wrote 1,061 aggregate rows → /home/ubuntu/upsc-slm-eval/results/aggregate.parquet
+     + extras → /home/ubuntu/upsc-slm-eval/results/aggregate.extras.json
+     by task: {'A': 188, 'B': 188, 'C': 100, 'E': 144, 'F': 180, 'G': 233, 'universal': 28}

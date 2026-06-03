@@ -1,0 +1,180 @@
+{
+  "bilingual_delta": {
+    "C1a": {
+      "n_paired": 70,
+      "n_discordant_en_only_correct": 8,
+      "n_discordant_hi_only_correct": 11,
+      "acc_en": 0.7142857142857143,
+      "acc_hi": 0.7571428571428571,
+      "delta_en_minus_hi": -0.04285714285714286,
+      "paired_t": -0.6856372293678565,
+      "p_value_t": 0.4952391348372347,
+      "mcnemar_p_value": 0.6476058959960938
+    },
+    "C1b": {
+      "n_paired": 70,
+      "n_discordant_en_only_correct": 25,
+      "n_discordant_hi_only_correct": 7,
+      "acc_en": 0.6142857142857143,
+      "acc_hi": 0.35714285714285715,
+      "delta_en_minus_hi": 0.2571428571428571,
+      "paired_t": 3.415853986211182,
+      "p_value_t": 0.0010693417742771855,
+      "mcnemar_p_value": 0.0021024015732109547
+    },
+    "C2": {
+      "n_paired": 70,
+      "n_discordant_en_only_correct": 1,
+      "n_discordant_hi_only_correct": 1,
+      "acc_en": 0.8857142857142857,
+      "acc_hi": 0.8857142857142857,
+      "delta_en_minus_hi": 0.0,
+      "paired_t": 0.0,
+      "p_value_t": 1.0,
+      "mcnemar_p_value": 1.0
+    },
+    "C3": {
+      "n_paired": 70,
+      "n_discordant_en_only_correct": 1,
+      "n_discordant_hi_only_correct": 1,
+      "acc_en": 0.8857142857142857,
+      "acc_hi": 0.8857142857142857,
+      "delta_en_minus_hi": 0.0,
+      "paired_t": 0.0,
+      "p_value_t": 1.0,
+      "mcnemar_p_value": 1.0
+    }
+  },
+  "silly_breakdown": {
+    "C1a": {
+      "n_silly": 322,
+      "n_normal": 478,
+      "acc_silly": 0.6086956521739131,
+      "acc_normal": 0.6694560669456067,
+      "delta_silly_minus_normal": -0.06076041477169358
+    },
+    "C1b": {
+      "n_silly": 322,
+      "n_normal": 478,
+      "acc_silly": 0.43788819875776397,
+      "acc_normal": 0.5941422594142259,
+      "delta_silly_minus_normal": -0.15625406065646197
+    },
+    "C2": {
+      "n_silly": 322,
+      "n_normal": 478,
+      "acc_silly": 0.9254658385093167,
+      "acc_normal": 0.891213389121339,
+      "delta_silly_minus_normal": 0.03425244938797778
+    },
+    "C3": {
+      "n_silly": 322,
+      "n_normal": 478,
+      "acc_silly": 0.9130434782608695,
+      "acc_normal": 0.9058577405857741,
+      "delta_silly_minus_normal": 0.007185737675095449
+    }
+  },
+  "task_c_rank": {
+    "C1a": {
+      "n": 490,
+      "qwk": 0.8355319968647457,
+      "spearman_rho": 0.7275920933833577,
+      "pearson_r": 0.7933219416997835,
+      "score_mae": 3.1035714285714286,
+      "score_variance_ratio": 3.715146069296038,
+      "confusion_matrix_low_mid_high": [
+        [
+          83,
+          57,
+          3
+        ],
+        [
+          10,
+          159,
+          20
+        ],
+        [
+          14,
+          52,
+          92
+        ]
+      ]
+    },
+    "C1b": {
+      "n": 472,
+      "qwk": 0.8057302219263598,
+      "spearman_rho": 0.7776951525809378,
+      "pearson_r": 0.7574317015605522,
+      "score_mae": 1.900572033898305,
+      "score_variance_ratio": 1.7278856573223584,
+      "confusion_matrix_low_mid_high": [
+        [
+          110,
+          33,
+          2
+        ],
+        [
+          22,
+          146,
+          18
+        ],
+        [
+          12,
+          53,
+          76
+        ]
+      ]
+    },
+    "C2": {
+      "n": 313,
+      "qwk": 0.8754558894851755,
+      "spearman_rho": 0.7873603473230615,
+      "pearson_r": 0.872343637907108,
+      "score_mae": 2.1584664536741216,
+      "score_variance_ratio": 1.5236030229129278,
+      "confusion_matrix_low_mid_high": [
+        [
+          44,
+          39,
+          4
+        ],
+        [
+          6,
+          78,
+          42
+        ],
+        [
+          5,
+          18,
+          77
+        ]
+      ]
+    },
+    "C3": {
+      "n": 299,
+      "qwk": 0.840659725723936,
+      "spearman_rho": 0.8102483775633652,
+      "pearson_r": 0.7807409617532558,
+      "score_mae": 2.5157190635451507,
+      "score_variance_ratio": 1.6641130142998954,
+      "confusion_matrix_low_mid_high": [
+        [
+          67,
+          28,
+          1
+        ],
+        [
+          10,
+          75,
+          14
+        ],
+        [
+          9,
+          18,
+          77
+        ]
+      ]
+    }
+  }
+}

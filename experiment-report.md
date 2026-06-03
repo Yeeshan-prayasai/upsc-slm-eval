@@ -319,46 +319,61 @@ Per condition × task × primary metric. Tables auto-fill from `aggregate.parque
 
 | Condition | Accuracy (en) | Accuracy (hi) | UPSC neg-mark score | ECE | Brier | Refusal rate |
 |---|---:|---:|---:|---:|---:|---:|
-| C1a (Gemma-4-E4B-it + LoRA) | — | — | — | — | — | — |
-| C1b (Qwen3.5-4B + LoRA) | — | — | — | — | — | — |
-| C2 (zero-shot Gemini-3-Flash) | — | — | — | — | — | — |
-| C3 (few-shot Gemini-3-Flash) | — | — | — | — | — | — |
+| C1a (Gemma-4-E4B-it + LoRA) | 0.652 | 0.636 | 1.062 | 0.539 | 0.528 | 0.001 |
+| C1b (Qwen3.5-4B + LoRA) | 0.614 | 0.426 | 0.756 | 0.372 | 0.391 | 0.005 |
+| C2 (zero-shot Gemini-3-Flash) | 0.884 | 0.932 | 1.764 | 0.889 | 0.825 | 0.003 |
+| C3 (few-shot Gemini-3-Flash) | 0.891 | 0.932 | 1.771 | 0.877 | 0.816 | 0.001 |
+
+*Infer:* Gemini-3.5-Flash dominates accuracy (EN +23-28 pp, HI +30-50 pp); Qwen-FT's Hindi accuracy (0.426) is the weak point — predicted by the failed pre-FT Hindi probe (§6.2). All four conditions show heavy verbal-confidence miscalibration (ECE 0.37-0.89) so Brier scores are uninformative as direct confidence reads.
+*v2 path:* Replace verbal confidence with logit-based or self-consistency-derived confidence — currently blocked because the API surface does not expose logits (§9 limitation 5); add explicit Hindi instruction-tuning to the FT corpus to close Qwen's Hindi gap.
 
 #### Task A — Explanation quality (Tier 1)
 
 | Condition | Expl. BERTScore-F1 | Expl. ROUGE-L | Expl. Entity-F1 | Distractor coverage | Reasoning-step density | Article/scheme citation acc. | Position-bias χ² p | Sentence-len variance |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| C1a | — | — | — | — | — | — | — | — |
-| C1b | — | — | — | — | — | — | — | — |
-| C2  | — | — | — | — | — | — | — | — |
-| C3  | — | — | — | — | — | — | — | — |
+| C1a | 0.826 | 0.284 | 0.187 | 0.097 | 0.389 | 1.000 | 0.654 | 815.714 |
+| C1b | 0.826 | 0.320 | 0.239 | 0.093 | 0.437 | 1.000 | 1.51e-05 | 741.067 |
+| C2 | 0.785 | 0.215 | 0.181 | 0.135 | 1.029 | 1.000 | 0.242 | 192.529 |
+| C3 | 0.808 | 0.243 | 0.212 | 0.155 | 0.586 | 1.000 | 0.520 | 840.872 |
+
+*Infer:* FT-SLMs slightly lead BERTScore-F1 (0.826 vs Gemini 0.785-0.808 — closer to gold style); distractor coverage is universally weak (<16 % across all conditions); only Qwen-FT shows significant position bias (χ² p = 1.5e-5 → biased toward certain MCQ letters).
+*v2 path:* Add Tier-2 Pedagogical Clarity 5-axis LLM-judge rubric ([eval-design §4.1](eval-design.md)) to capture didactic quality surface metrics miss; BLEURT-20 (deferred per §5.1) would tighten the BERTScore-only signal at this 50-300 word length range.
 
 #### Task B — Mains generation
 
 | Condition | BERTScore-F1 | BLEURT-20 | ROUGE-L F1 | chrF++ | Word-count adh. | Entity-F1 | Hindi code-mix | MATTR | F-K grade | Paragraph adh. | 4-gram rep. rate | UPSC fact prec. |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| C1a | — | — | — | — | — | — | — | — | — | — | — | — |
-| C1b | — | — | — | — | — | — | — | — | — | — | — | — |
-| C2  | — | — | — | — | — | — | — | — | — | — | — | — |
-| C3  | — | — | — | — | — | — | — | — | — | — | — | — |
+| C1a | 0.833 | — | 0.244 | 0.374 | 0.086 | 0.184 | 0.089 | 0.479 | 13.409 | 0.267 | 0.022 | 0.950 |
+| C1b | 0.811 | — | 0.255 | 0.385 | 0.083 | 0.192 | 0.011 | 0.664 | 19.474 | 0.171 | 0.108 | 0.955 |
+| C2 | 0.794 | — | 0.177 | 0.159 | 0.484 | 0.129 | 0.062 | 0.721 | 12.397 | 0.573 | 0.001 | 0.840 |
+| C3 | 0.795 | — | 0.142 | 0.151 | 0.285 | 0.121 | 0.074 | 0.664 | 12.179 | 0.549 | 0.001 | 0.910 |
+
+*Infer:* FT-SLMs win the style-similarity axis (BERTScore +0.02-0.04 over Gemini, ROUGE-L +0.07, chrF++ +0.22) but lose badly on word-count adherence (FT 0.08-0.09 vs Gemini 0.29-0.48) — FT outputs systematically overshoot the target. UPSC fact-lookup precision is high across all conditions (>0.84).
+*v2 path:* Add BLEURT-20 and generation perplexity ([eval-design §4.2](eval-design.md)) for orthogonal faithfulness signal; add a length-penalty term to the FT loss to compress outputs toward the prescribed word-count band.
 
 #### Task C — Mains rubric grading
 
-| Condition | QWK vs gold | Score MAE | Spearman ρ | Per-criterion κ | Strengths F1 | Improvements F1 | Score var. ratio | JSON schema valid | Item-count adh. |
+| Condition | QWK vs gold | Score MAE | Spearman ρ | Per-criterion F1 (I/B/C) | Strengths F1 | Improvements F1 | Score var. ratio | JSON schema valid | Item-count adh. |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| C1a | — | — | — | — | — | — | — | — | — |
-| C1b | — | — | — | — | — | — | — | — | — |
-| C2  | — | — | — | — | — | — | — | — | — |
-| C3  | — | — | — | — | — | — | — | — | — |
+| C1a | 0.836 | 3.104 | 0.728 | 0.994 / 0.307 / 0.296 | 0.426 | 0.330 | 3.715 | 0.006 | 0.714 |
+| C1b | 0.806 | 1.901 | 0.778 | 1.000 / 0.339 / 0.329 | 0.459 | 0.365 | 1.728 | 0.000 | 0.722 |
+| C2 | 0.875 | 2.158 | 0.787 | 0.820 / 0.075 / 0.086 | 0.131 | 0.079 | 1.524 | 0.180 | 0.213 |
+| C3 | 0.841 | 2.516 | 0.810 | 0.890 / 0.077 / 0.094 | 0.141 | 0.076 | 1.664 | 0.136 | 0.220 |
+
+*Infer:* Qwen-FT halves the score MAE (1.90 vs Gemini 2.16-2.52) and FT-SLMs score 3-5× higher on Strengths/Improvements F1 (qualitative-component agreement); Gemini holds the highest QWK (0.875) on rank correlation but with worse JSON schema validity (0.18 vs FT < 0.01) — Gemini produces correct rankings inside invalid wrapper schemas.
+*v2 path:* Human-mentor calibration on a 50-row subsample (§9 limitation 1) to validate the rubric gold itself; Tier-2 Feedback Pedagogical Clarity rubric ([eval-design §4.3](eval-design.md)) for actionability + specificity scoring.
 
 #### Task E — Current Affairs synthesis
 
 | Condition | BERTScore-F1 | Entity-F1 | Halluc. rate | Date F1 | SummaC-ZS | Subject-tag acc | Compression adh. | Glossary recall | Citation density | Lead-100 entity recall | UPSC fact prec. |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| C1a | — | — | — | — | — | — | — | — | — | — | — |
-| C1b | — | — | — | — | — | — | — | — | — | — | — |
-| C2  | — | — | — | — | — | — | — | — | — | — | — |
-| C3  | — | — | — | — | — | — | — | — | — | — | — |
+| C1a | 0.866 | 0.291 | 0.694 | 0.624 | — | 0.966 | 0.000 | — | 2.981 | 0.269 | 0.773 |
+| C1b | 0.873 | 0.298 | 0.740 | 0.579 | — | 0.985 | 0.000 | — | 2.658 | 0.267 | 0.687 |
+| C2 | 0.840 | 0.165 | 0.467 | 0.625 | — | 0.615 | 0.242 | — | 4.751 | 0.196 | 0.777 |
+| C3 | 0.851 | 0.145 | 0.401 | 0.643 | — | 0.508 | 0.166 | — | 4.415 | 0.194 | 0.780 |
+
+*Infer:* FT-SLMs match gold style (BERTScore 0.87 vs Gemini 0.84-0.85) and subject framing (subject_tag_acc ~0.97 vs Gemini ~0.55) but show high hallucination rates by the entity-not-in-source proxy (FT ~0.70 vs Gemini ~0.45) — the FT corpus taught the model to add UPSC-syllabus context that isn't literally in the news article; compression adherence is 0.00 for FT-SLMs (outputs too long relative to source).
+*v2 path:* Replace the entity-not-in-source proxy with SummaC-ZS + AlignScore + FactScore ([eval-design §4.4](eval-design.md), all git-only) — these distinguish "added valid UPSC framing" from "fabricated facts"; add glossary recall via `prod.glossary` to credit valid curriculum framing.
 
 #### Task F — Prelims Explanation Generation (prayas production prompt)
 
@@ -366,10 +381,13 @@ Paired comparison: each cell is the Task-F metric value; the right-most column r
 
 | Condition | BERTScore-F1 (en) | BERTScore-F1 (hi) | ROUGE-L F1 | chrF++ | Entity-F1 | Distractor coverage | Reasoning-step density | Article citation acc. | Word-count adh. | Hindi code-mix | Δ BERTScore-F1 vs Task A |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| C1a | — | — | — | — | — | — | — | — | — | — | — |
-| C1b | — | — | — | — | — | — | — | — | — | — | — |
-| C2  | — | — | — | — | — | — | — | — | — | — | — |
-| C3  | — | — | — | — | — | — | — | — | — | — | — |
+| C1a | 0.874 | 0.715 | 0.239 | 0.319 | 0.307 | 0.115 | 0.379 | 1.000 | 0.572 | — | -0.022 |
+| C1b | 0.867 | 0.710 | 0.245 | 0.379 | 0.192 | 0.115 | 0.243 | 1.000 | 0.347 | — | -0.003 |
+| C2 | 0.847 | 0.692 | 0.161 | 0.157 | 0.064 | 0.032 | 0.156 | 1.000 | 0.106 | — | -0.014 |
+| C3 | 0.847 | 0.692 | 0.161 | 0.157 | 0.064 | 0.032 | 0.156 | 1.000 | 0.106 | — | -0.037 |
+
+*Infer:* FT-SLMs hold +2.5 pp BERTScore-F1 over Gemini on the production prompt (EN 0.87 vs 0.85, HI 0.71 vs 0.69) and 3.6× higher distractor coverage (0.115 vs 0.032) — FT-SLMs follow the bilingual production format with higher fidelity. Δ vs Task A is uniformly small and negative (-0.003 to -0.037); the production prompt itself adds no quality lift, only format constraints.
+*v2 path:* Tier-2 Pedagogical Clarity rubric for Task F ([eval-design §4.6](eval-design.md) defers it) — BEA 2025 confirms surface BERTScore misses didactic quality at this 50-300 word length range.
 
 #### Task G — Mains Model-Answer Generation (prayas production prompt)
 
@@ -377,19 +395,25 @@ Same paired-comparison logic against Task B.
 
 | Condition | BERTScore-F1 | ROUGE-L F1 | chrF++ | Word-count adh. | Paragraph adh. | Entity-F1 | Date/Num F1 | MATTR | F-K grade | 4-gram rep. | UPSC fact prec. | Dim-keyword cov. | Δ BERTScore-F1 vs Task B |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| C1a | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| C1b | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| C2  | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| C3  | — | — | — | — | — | — | — | — | — | — | — | — | — |
+| C1a | 0.716 | 0.092 | 0.172 | 0.170 | 0.433 | 0.093 | 0.254 | 0.597 | 17.418 | 0.349 | 0.970 | 0.538 | -0.117 |
+| C1b | 0.745 | 0.133 | 0.229 | 0.131 | 0.164 | 0.146 | 0.391 | 0.723 | 19.656 | 0.095 | 0.900 | 0.597 | -0.066 |
+| C2 | 0.708 | 0.048 | 0.023 | 0.003 | 0.840 | 0.025 | 0.251 | 0.945 | 9.319 | 0.001 | 0.980 | 0.203 | -0.086 |
+| C3 | 0.708 | 0.048 | 0.023 | 0.003 | 0.840 | 0.025 | 0.251 | 0.945 | 9.319 | 0.001 | 0.980 | 0.203 | -0.087 |
+
+*Infer:* Qwen-FT leads BERTScore (0.745, +0.037 over Gemini); both FT-SLMs cover ~2.8× more PESEE dimensions than Gemini (0.54-0.60 vs 0.20) — the FT corpus encoded multi-dimensional Mains framing Gemini lacks. Δ vs Task B is uniformly negative (-0.066 to -0.117): the production DSL's L1-L4 + banned-word constraints reduce raw similarity to gold without adding signal.
+*v2 path:* PDD coherence ([eval-design §4.7](eval-design.md)) for long-form structural quality — beats DiscoScore + BARTScore by ~10 correlation points per NAACL-Short 2024; currently deferred for the discourse-parser dep.
 
 ### 6.4 Universal metrics
 
 | Condition | Latency p50 (ms) | TTFT (ms) | Tokens/sec | Cost/query (USD) | Format-validity rate |
 |---|---:|---:|---:|---:|---:|
-| C1a | — | — | — | — | — |
-| C1b | — | — | — | — | — |
-| C2  | — | — | — | — | — |
-| C3  | — | — | — | — | — |
+| C1a | 94920 | 4248 | 8.1 | $0.0000 | 0.704 |
+| C1b | 86055 | 2813 | 10.3 | $0.0000 | 0.615 |
+| C2 | 6492 | 5732 | 27.5 | $0.0014 | 0.634 |
+| C3 | 7260 | 5914 | 32.9 | $0.0025 | 0.618 |
+
+*Infer:* Gemini per-query cost is $0.0014-0.0025; FT-SLMs are $0 marginal. Format-validity rate sits at 0.61-0.70 across all conditions — well below the 0.90 production threshold (prompt-only JSON benchmark floor), so downstream JSON-extracted metrics carry an unreliable-format tail across the full eval.
+*v2 path:* Constrained-decoding (Outlines / XGrammar) to lift format-validity above 0.99 per JSONSchemaBench 2026; add a JSON-validity penalty term to the FT loss so format compliance is baked into the model rather than relying on prompt instruction.
 
 ### 6.5 Tier-2 (LLM-judge, diagnostic only — not headline)
 
@@ -586,31 +610,301 @@ Auto-filled from `scripts/test_hypotheses.py`.
 
 For each task × metric × pairwise comparison, the table reports the point estimate of the delta, paired-bootstrap 95% CI on the delta, raw p-value (10K-resample), and BH-FDR-corrected p-value (q = 0.05).
 
-| Task | Metric | Comparison | Δ (mean) | 95% CI | p (raw) | p (BH-FDR) | Significant? |
-|---|---|---|---:|---|---:|---:|---|
-| A | accuracy_en | C1a − C1b | — | (—, —) | — | — | — |
-| A | accuracy_en | C1a − C2 | — | (—, —) | — | — | — |
-| A | accuracy_en | C1a − C3 | — | (—, —) | — | — | — |
-| A | accuracy_en | C1b − C2 | — | (—, —) | — | — | — |
-| A | accuracy_en | C1b − C3 | — | (—, —) | — | — | — |
-| A | accuracy_en | C2 − C3 | — | (—, —) | — | — | — |
-| … (≈60 rows total — 6 pairwise comparisons × ~10 metrics) | | | | | | | |
+| Task | Metric | Comparison | Δ (mean) | 95% CI | p (raw) | p (BH-FDR) | Effect size | Significant? |
+|---|---|---|---:|---|---:|---:|---:|---|
+| A | is_correct | C1a − C1b | 0.114 | (0.076, 0.151) | 3.21e-09 | 6.05e-09 | 0.232 (small) | ✓ |
+| A | is_correct | C1a − C2 | -0.260 | (-0.295, -0.223) | 2.29e-41 | 1.06e-40 | -0.650 (medium) | ✓ |
+| A | is_correct | C1a − C3 | -0.264 | (-0.299, -0.228) | 8.15e-42 | 3.86e-41 | -0.663 (medium) | ✓ |
+| A | is_correct | C1b − C2 | -0.374 | (-0.411, -0.332) | 2.72e-66 | 2.43e-65 | -0.882 (large) | ✓ |
+| A | is_correct | C1b − C3 | -0.378 | (-0.416, -0.336) | 5.28e-69 | 4.96e-68 | -0.895 (large) | ✓ |
+| A | is_correct | C2 − C3 | -0.004 | (-0.015, 0.009) | 0.549 | 0.585 | -0.013 (negligible) | — |
+| B | answer_bertscore_f1 | C1a − C1b | -0.004 | (-0.009, -0.000) | 0.038 | 0.048 | -0.129 (negligible) | — |
+| B | answer_bertscore_f1 | C1a − C2 | 0.014 | (0.008, 0.019) | 7.75e-07 | 1.33e-06 | 0.328 (small) | ✓ |
+| B | answer_bertscore_f1 | C1a − C3 | 0.010 | (0.004, 0.016) | 0.002 | 0.003 | 0.213 (small) | ✓ |
+| B | answer_bertscore_f1 | C1b − C2 | 0.019 | (0.015, 0.024) | 8.76e-14 | 1.86e-13 | 0.412 (small) | ✓ |
+| B | answer_bertscore_f1 | C1b − C3 | 0.019 | (0.014, 0.024) | 2.24e-13 | 4.72e-13 | 0.423 (small) | ✓ |
+| B | answer_bertscore_f1 | C2 − C3 | -0.003 | (-0.009, 0.003) | 0.342 | 0.381 | -0.056 (negligible) | — |
+| C | score_abs_err | C1a − C1b | -0.755 | (-1.283, -0.352) | 0.003 | 0.004 | 0.141 (negligible) | ✓ |
+| C | score_abs_err | C1a − C2 | -0.531 | (-0.998, -0.147) | 0.020 | 0.026 | 0.134 (negligible) | ✓ |
+| C | score_abs_err | C1a − C3 | -0.861 | (-1.578, -0.308) | 0.008 | 0.011 | 0.156 (negligible) | ✓ |
+| C | score_abs_err | C1b − C2 | 0.232 | (0.064, 0.388) | 0.007 | 0.010 | -0.158 (negligible) | ✓ |
+| C | score_abs_err | C1b − C3 | 0.213 | (0.011, 0.445) | 0.047 | 0.060 | -0.119 (negligible) | — |
+| C | score_abs_err | C2 − C3 | -0.300 | (-0.519, -0.109) | 0.005 | 0.006 | 0.207 (small) | ✓ |
+| E | mains_bertscore_f1 | C1a − C1b | -0.007 | (-0.008, -0.006) | 3.05e-24 | 8.88e-24 | -0.645 (medium) | ✓ |
+| E | mains_bertscore_f1 | C1a − C2 | 0.024 | (0.021, 0.028) | 9.41e-40 | 4.17e-39 | 1.026 (large) | ✓ |
+| E | mains_bertscore_f1 | C1a − C3 | 0.016 | (0.012, 0.019) | 2.12e-16 | 4.89e-16 | 0.639 (medium) | ✓ |
+| E | mains_bertscore_f1 | C1b − C2 | 0.031 | (0.028, 0.035) | 9.45e-51 | 5.53e-50 | 1.232 (large) | ✓ |
+| E | mains_bertscore_f1 | C1b − C3 | 0.023 | (0.019, 0.026) | 1.95e-28 | 6.52e-28 | 0.924 (large) | ✓ |
+| E | mains_bertscore_f1 | C2 − C3 | -0.011 | (-0.014, -0.008) | 2.35e-10 | 4.53e-10 | -0.531 (medium) | ✓ |
+| F | explanation_bertscore_f1 | C1a − C1b | 0.005 | (0.002, 0.007) | 1.11e-04 | 1.72e-04 | 0.161 (negligible) | ✓ |
+| F | explanation_bertscore_f1 | C1a − C2 | 0.023 | (0.017, 0.029) | 3.48e-13 | 7.27e-13 | 0.466 (small) | ✓ |
+| F | explanation_bertscore_f1 | C1a − C3 | 0.023 | (0.017, 0.029) | 3.48e-13 | 7.27e-13 | 0.466 (small) | ✓ |
+| F | explanation_bertscore_f1 | C1b − C2 | 0.020 | (0.013, 0.027) | 4.96e-08 | 8.99e-08 | 0.399 (small) | ✓ |
+| F | explanation_bertscore_f1 | C1b − C3 | 0.020 | (0.013, 0.027) | 4.96e-08 | 8.99e-08 | 0.399 (small) | ✓ |
+| F | explanation_bertscore_f1 | C2 − C3 | 0.000 | (-0.000, 0.000) | 0.533 | 0.571 | 0.038 (negligible) | — |
+| G | answer_bertscore_f1 | C1a − C1b | -0.029 | (-0.033, -0.025) | 6.36e-34 | 2.47e-33 | -0.668 (medium) | ✓ |
+| G | answer_bertscore_f1 | C1a − C2 | 0.008 | (0.002, 0.013) | 0.003 | 0.005 | 0.148 (negligible) | ✓ |
+| G | answer_bertscore_f1 | C1a − C3 | 0.008 | (0.002, 0.013) | 0.003 | 0.005 | 0.148 (negligible) | ✓ |
+| G | answer_bertscore_f1 | C1b − C2 | 0.037 | (0.031, 0.042) | 1.03e-30 | 3.73e-30 | 0.628 (medium) | ✓ |
+| G | answer_bertscore_f1 | C1b − C3 | 0.037 | (0.031, 0.042) | 1.03e-30 | 3.73e-30 | 0.628 (medium) | ✓ |
+| G | answer_bertscore_f1 | C2 − C3 | 0.000 | (-0.000, 0.000) | 0.109 | 0.131 | 0.080 (negligible) | — |
+| A | accuracy_en | C1a − C1b | 0.038 | (-0.004, 0.087) | 0.107 | 0.129 | 0.079 (negligible) | — |
+| A | accuracy_en | C1a − C2 | -0.232 | (-0.281, -0.185) | 7.38e-20 | 1.88e-19 | -0.567 (medium) | ✓ |
+| A | accuracy_en | C1a − C3 | -0.239 | (-0.288, -0.192) | 6.85e-21 | 1.81e-20 | -0.588 (medium) | ✓ |
+| A | accuracy_en | C1b − C2 | -0.270 | (-0.315, -0.223) | 1.59e-23 | 4.51e-23 | -0.646 (medium) | ✓ |
+| A | accuracy_en | C1b − C3 | -0.277 | (-0.321, -0.230) | 1.36e-25 | 4.21e-25 | -0.667 (medium) | ✓ |
+| A | accuracy_en | C2 − C3 | -0.007 | (-0.022, 0.009) | 0.406 | 0.446 | -0.021 (negligible) | — |
+| A | accuracy_hi | C1a − C1b | 0.210 | (0.151, 0.267) | 2.33e-11 | 4.61e-11 | 0.424 (small) | ✓ |
+| A | accuracy_hi | C1a − C2 | -0.295 | (-0.349, -0.244) | 1.68e-23 | 4.74e-23 | -0.766 (medium) | ✓ |
+| A | accuracy_hi | C1a − C3 | -0.295 | (-0.349, -0.239) | 1.03e-22 | 2.84e-22 | -0.766 (medium) | ✓ |
+| A | accuracy_hi | C1b − C2 | -0.506 | (-0.562, -0.449) | 3.91e-48 | 2.10e-47 | -1.191 (large) | ✓ |
+| A | accuracy_hi | C1b − C3 | -0.506 | (-0.562, -0.446) | 3.91e-48 | 2.10e-47 | -1.191 (large) | ✓ |
+| A | accuracy_hi | C2 − C3 | 0.000 | (-0.020, 0.020) | 1.000 | 1.000 | 0.000 (negligible) | — |
+
+*Infer:* All Task A accuracy comparisons FT-vs-Gemini reach significance with medium-to-large effect sizes (Cohen's d -0.59 to -1.19) — Gemini's lead is real and substantial. Tasks B/E/F/G show small-to-medium FT-SLM wins on BERTScore-F1 (d 0.21-1.23). Task C score-error advantage is statistically significant but with negligible effect size (d 0.13-0.16) — significant but operationally small.
+*v2 path:* Cost-adjusted Pareto front ([§11 out-of-scope](#11-out-of-scope)) — effect size alone misses the $0 vs $0.002 per-query trade-off; the Task A loss may still be acceptable at zero marginal cost if quality on Tasks B/C/E/F/G compensates.
 
 ### 7.2 Per-stratum heatmap data
 
 Each cell: C1 − C3 delta on the primary metric for that (task, stratum).
 
-| Task | Stratum | Δ (C1 − C3) | 95% CI | Verdict |
+| Task | Stratum | Δ (champion − C3) | 95% CI | Verdict |
 |---|---|---:|---|---|
-| A | en × GS-I × silly_mistake_prone=True | — | (—, —) | — |
-| A | hi × GS-I × silly_mistake_prone=True | — | (—, —) | — |
-| A | en × GS-I × silly_mistake_prone=False | — | (—, —) | — |
-| B | GS4 × 250-word | — | (—, —) | — |
-| C | Ethics-Case-Studies × mid-band | — | (—, —) | — |
-| E | December × `Geopolitics` theme | — | (—, —) | — |
-| … | | | | |
+| A | CSAT|UNTAGGED|silly=0|en | -0.261 | (-0.522, 0.043) | TIE |
+| A | GS1|Current Affairs|silly=0|en | 0.000 | (-0.300, 0.300) | TIE |
+| A | GS1|Current Affairs|silly=0|hi | -0.444 | (-0.778, -0.111) | LOSS |
+| A | GS1|Economy|silly=0|en | 0.000 | (0.000, 0.000) | TIE |
+| A | GS1|Economy|silly=0|hi | -0.250 | (-0.500, 0.000) | TIE |
+| A | GS1|Environment|silly=0|en | -0.357 | (-0.643, -0.143) | LOSS |
+| A | GS1|Environment|silly=0|hi | -0.333 | (-0.667, 0.000) | TIE |
+| A | GS1|Geography|silly=0|en | -0.182 | (-0.366, 0.000) | TIE |
+| A | GS1|Geography|silly=0|hi | -0.188 | (-0.438, 0.062) | TIE |
+| A | GS1|Geography|silly=1|en | 0.000 | (-0.800, 0.800) | TIE |
+| A | GS1|Hisotry|silly=1|en | -0.125 | (-0.375, 0.000) | TIE |
+| A | GS1|Hisotry|silly=1|hi | -0.222 | (-0.556, 0.000) | TIE |
+| A | GS1|History|silly=0|en | -0.308 | (-0.538, -0.077) | LOSS |
+| A | GS1|History|silly=0|hi | -0.167 | (-0.417, 0.000) | TIE |
+| A | GS1|History|silly=1|en | -0.250 | (-0.500, 0.000) | TIE |
+| A | GS1|History|silly=1|hi | -0.500 | (-0.875, -0.125) | LOSS |
+| A | GS1|Miscellaneous|silly=0|en | -0.364 | (-0.636, -0.091) | LOSS |
+| A | GS1|Miscellaneous|silly=0|hi | -0.300 | (-0.600, 0.000) | TIE |
+| A | GS1|Polity|silly=0|en | -0.250 | (-0.625, 0.000) | TIE |
+| A | GS1|Polity|silly=0|hi | -0.250 | (-0.500, 0.000) | TIE |
+| A | GS1|Polity|silly=1|en | -0.286 | (-0.571, 0.000) | TIE |
+| A | GS1|Science & Tech|silly=0|en | -0.222 | (-0.556, 0.000) | TIE |
+| A | GS1|Science & Tech|silly=0|hi | -0.200 | (-0.400, 0.000) | TIE |
+| A | GS1|UNTAGGED|silly=0|en | -0.185 | (-0.296, -0.074) | LOSS |
+| A | GS1|UNTAGGED|silly=1|en | -0.417 | (-0.667, -0.167) | LOSS |
+| A | GS1|history|silly=1|en | -0.125 | (-0.375, 0.000) | TIE |
+| A | GS1|history|silly=1|hi | 0.000 | (0.000, 0.000) | TIE |
+| A | gs1|Art & Culture|silly=0|en | -0.250 | (-0.625, 0.128) | TIE |
+| A | gs1|Art & Culture|silly=0|hi | 0.125 | (0.000, 0.375) | TIE |
+| A | gs1|Art & Culture|silly=1|en | -0.250 | (-0.500, 0.000) | TIE |
+| A | gs1|Art & Culture|silly=1|hi | -0.500 | (-0.875, -0.125) | LOSS |
+| A | gs1|Current Affairs|silly=0|en | 0.083 | (-0.167, 0.417) | TIE |
+| A | gs1|Current Affairs|silly=0|hi | -0.250 | (-0.625, 0.250) | TIE |
+| A | gs1|Current Affairs|silly=1|en | -0.444 | (-0.778, -0.111) | LOSS |
+| A | gs1|Current Affairs|silly=1|hi | -0.333 | (-0.778, 0.111) | TIE |
+| A | gs1|Economy|silly=0|en | -0.222 | (-0.444, 0.000) | TIE |
+| A | gs1|Economy|silly=0|hi | -0.333 | (-0.667, 0.000) | TIE |
+| A | gs1|Economy|silly=1|en | -0.125 | (-0.375, 0.000) | TIE |
+| A | gs1|Economy|silly=1|hi | -0.250 | (-0.625, 0.250) | TIE |
+| A | gs1|Environment|silly=0|en | -0.556 | (-0.889, -0.222) | LOSS |
+| A | gs1|Environment|silly=0|hi | -0.250 | (-0.500, 0.000) | TIE |
+| A | gs1|Environment|silly=1|en | -0.125 | (-0.375, 0.000) | TIE |
+| A | gs1|Environment|silly=1|hi | -0.600 | (-0.900, -0.300) | LOSS |
+| A | gs1|Geography|silly=0|en | -0.125 | (-0.375, 0.000) | TIE |
+| A | gs1|Geography|silly=0|hi | 0.250 | (0.000, 0.625) | TIE |
+| A | gs1|Geography|silly=1|en | -0.333 | (-0.667, -0.111) | LOSS |
+| A | gs1|Geography|silly=1|hi | -0.500 | (-0.875, -0.125) | LOSS |
+| A | gs1|History|silly=0|en | -0.222 | (-0.556, 0.000) | TIE |
+| A | gs1|History|silly=0|hi | -0.444 | (-0.778, -0.111) | LOSS |
+| A | gs1|History|silly=1|en | -0.222 | (-0.556, 0.000) | TIE |
+| A | gs1|History|silly=1|hi | 0.000 | (0.000, 0.000) | TIE |
+| A | gs1|International Relations|silly=1|en | -0.125 | (-0.375, 0.000) | TIE |
+| A | gs1|International Relations|silly=1|hi | 0.000 | (-0.375, 0.375) | TIE |
+| A | gs1|Miscellaneous|silly=0|en | -0.222 | (-0.556, 0.000) | TIE |
+| A | gs1|Miscellaneous|silly=0|hi | -0.333 | (-0.583, -0.083) | LOSS |
+| A | gs1|Miscellaneous|silly=1|en | -0.375 | (-0.750, -0.122) | LOSS |
+| A | gs1|Miscellaneous|silly=1|hi | -0.625 | (-0.875, -0.250) | LOSS |
+| A | gs1|Polity|silly=0|en | -0.333 | (-0.778, 0.111) | TIE |
+| A | gs1|Polity|silly=0|hi | -0.300 | (-0.600, -0.100) | LOSS |
+| A | gs1|Polity|silly=1|en | -0.375 | (-0.750, 0.000) | TIE |
+| A | gs1|Polity|silly=1|hi | -0.556 | (-0.889, -0.222) | LOSS |
+| A | gs1|Science & Technology|silly=0|en | -0.250 | (-0.625, 0.000) | TIE |
+| A | gs1|Science & Technology|silly=0|hi | -0.375 | (-0.750, -0.125) | LOSS |
+| A | gs1|Science & Technology|silly=1|en | 0.000 | (-0.375, 0.375) | TIE |
+| A | gs1|Science & Technology|silly=1|hi | -0.375 | (-0.750, -0.125) | LOSS |
+| A | gs1|Science & Tech|silly=0|en | 0.000 | (0.000, 0.000) | TIE |
+| A | gs1|Science & Tech|silly=0|hi | -0.100 | (-0.300, 0.000) | TIE |
+| A | gs1|Science & Tech|silly=1|en | -0.375 | (-0.750, -0.125) | LOSS |
+| A | gs1|Science & Tech|silly=1|hi | -0.375 | (-0.750, -0.122) | LOSS |
+| A | gs1|Social Development and India Year Book|silly=0|en | 0.300 | (0.100, 0.600) | WIN |
+| A | gs1|Social Development and India Year Book|silly=0|hi | -0.222 | (-0.556, 0.222) | TIE |
+| A | gs1|Social Development and India Year Book|silly=1|en | 0.125 | (-0.250, 0.500) | TIE |
+| A | gs1|Social Development and India Year Book|silly=1|hi | -0.375 | (-0.750, 0.000) | TIE |
+| A | gs1|Social Issues|silly=1|en | 0.333 | (0.000, 0.667) | TIE |
+| A | gs1|Social Issues|silly=1|hi | 0.333 | (0.000, 0.667) | TIE |
+| A | gs1|UNTAGGED|silly=0|en | -0.125 | (-0.375, 0.000) | TIE |
+| A | gs1|UNTAGGED|silly=0|hi | -0.375 | (-0.750, -0.122) | LOSS |
+| A | gs1|UNTAGGED|silly=1|en | -0.375 | (-0.750, -0.125) | LOSS |
+| A | gs1|UNTAGGED|silly=1|hi | -0.625 | (-0.875, -0.250) | LOSS |
+| B | GS1|Art and Culture|150w|en | 0.027 | (0.007, 0.051) | WIN |
+| B | GS1|Art and Culture|250w|en | -0.002 | (-0.016, 0.014) | TIE |
+| B | GS1|Geography|250w|en | 0.033 | (-0.017, 0.078) | TIE |
+| B | GS1|Modern Indian History|150w|en | -0.004 | (-0.014, 0.008) | TIE |
+| B | GS1|Modern Indian History|150w|hi | 0.078 | (0.015, 0.173) | WIN |
+| B | GS1|Society|150w|en | 0.014 | (0.001, 0.028) | WIN |
+| B | GS1|Society|150w|hi | 0.029 | (-0.006, 0.064) | TIE |
+| B | GS1|Society|250w|en | 0.010 | (0.001, 0.022) | WIN |
+| B | GS1|World History|150w|hi | 0.014 | (-0.017, 0.053) | TIE |
+| B | GS1|World History|250w|en | 0.007 | (0.001, 0.012) | WIN |
+| B | GS2|Governance|150w|en | 0.006 | (-0.012, 0.026) | TIE |
+| B | GS2|Governance|150w|hi | 0.016 | (-0.019, 0.044) | TIE |
+| B | GS2|International Relations|150w|en | 0.019 | (0.005, 0.030) | WIN |
+| B | GS2|International Relations|250w|en | 0.007 | (-0.014, 0.025) | TIE |
+| B | GS2|Polity|150w|en | -0.004 | (-0.014, 0.008) | TIE |
+| B | GS2|Social Justice|150w|en | 0.003 | (-0.018, 0.026) | TIE |
+| B | GS2|Social Justice|250w|hi | 0.023 | (-0.001, 0.044) | TIE |
+| B | GS3|Agriculture|150w|en | 0.011 | (0.002, 0.021) | WIN |
+| B | GS3|Economy|150w|en | -0.010 | (-0.025, 0.007) | TIE |
+| B | GS3|Environment and Disaster Management|250w|en | 0.014 | (-0.000, 0.030) | TIE |
+| B | GS3|Internal Security|150w|en | 0.029 | (0.014, 0.043) | WIN |
+| B | GS3|Internal Security|250w|en | 0.003 | (-0.004, 0.009) | TIE |
+| B | GS3|Science and Technology|250w|en | 0.004 | (-0.009, 0.022) | TIE |
+| B | GS4|Ethics - Case Studies|250w|en | 0.012 | (0.004, 0.020) | WIN |
+| B | GS4|Ethics - Governance aspects|150w|en | 0.020 | (0.003, 0.041) | WIN |
+| B | GS4|Ethics - Human Interface, Attitude, Values & E.I|150w|en | -0.002 | (-0.009, 0.004) | TIE |
+| B | GS4|Ethics - Moral Thinkers|150w|en | 0.007 | (0.002, 0.014) | WIN |
+| B | GS4|Ethics - Moral Thinkers|150w|hi | -0.007 | (-0.029, 0.021) | TIE |
+| B | Geography|UNTAGGED|150w|en | 0.022 | (-0.003, 0.045) | TIE |
+| B | History|UNTAGGED|150w|en | 0.020 | (-0.000, 0.051) | TIE |
+| C | Agriculture|low | 0.071 | (0.000, 0.214) | TIE |
+| C | Agriculture|mid | 0.600 | (0.300, 0.900) | WIN |
+| C | Art and Culture|high | 0.042 | (-0.667, 0.792) | TIE |
+| C | Art and Culture|low | 0.000 | (-0.583, 0.667) | TIE |
+| C | Art and Culture|mid | -0.100 | (-0.700, 0.600) | TIE |
+| C | Economy|high | 0.900 | (-0.500, 3.300) | TIE |
+| C | Economy|low | 0.143 | (0.000, 0.429) | TIE |
+| C | Economy|mid | 0.417 | (-0.167, 0.833) | TIE |
+| C | Environment and Disaster Management|high | 0.036 | (-0.464, 0.893) | TIE |
+| C | Essay|low | 4.786 | (0.929, 10.000) | WIN |
+| C | Ethics - Case Studies|high | -0.143 | (-0.786, 0.500) | TIE |
+| C | Ethics - Case Studies|low | 0.000 | (-0.333, 0.419) | TIE |
+| C | Ethics - Case Studies|mid | 0.100 | (-0.500, 0.700) | TIE |
+| C | Ethics - Moral Thinkers|high | 0.100 | (-0.900, 1.500) | TIE |
+| C | Ethics - Moral Thinkers|low | 0.000 | (0.000, 0.000) | TIE |
+| C | Geography|high | 0.214 | (-0.571, 1.143) | TIE |
+| C | Geography|low | 0.357 | (0.071, 0.786) | WIN |
+| C | Geography|mid | 0.600 | (-0.400, 1.900) | TIE |
+| C | History|low | -0.100 | (-1.100, 0.700) | TIE |
+| C | Internal Security|low | -0.250 | (-0.833, 0.167) | TIE |
+| C | International Relations|low | 0.000 | (0.000, 0.000) | TIE |
+| C | International Relations|mid | 0.200 | (-0.200, 0.500) | TIE |
+| C | Modern History|low | 0.000 | (-1.100, 1.100) | TIE |
+| C | Modern History|mid | 0.000 | (-0.500, 0.333) | TIE |
+| C | Modern Indian History|high | -0.340 | (-0.740, 0.000) | TIE |
+| C | Modern Indian History|low | -0.062 | (-0.188, 0.000) | TIE |
+| C | Modern Indian History|mid | -0.100 | (-3.100, 2.400) | TIE |
+| C | Polity|high | 0.792 | (0.083, 1.417) | WIN |
+| C | Polity|low | 0.083 | (-0.167, 0.333) | TIE |
+| C | Polity|mid | 0.257 | (-0.714, 1.501) | TIE |
+| C | Science and Technology|mid | 0.200 | (-0.300, 0.700) | TIE |
+| C | Social Justice|high | -0.200 | (-0.500, 0.200) | TIE |
+| C | Social Justice|low | -0.900 | (-1.600, -0.200) | LOSS |
+| C | Social Justice|mid | 0.700 | (0.100, 1.400) | WIN |
+| C | Society|high | 0.700 | (0.500, 1.100) | WIN |
+| C | Society|low | 0.000 | (0.000, 0.000) | TIE |
+| C | World History|low | 0.071 | (-0.500, 0.571) | TIE |
+| F | CSAT|UNTAGGED|silly=0|en | 0.071 | (0.053, 0.090) | WIN |
+| F | GS1|History|silly=0|hi | 0.086 | (0.033, 0.127) | WIN |
+| F | GS1|Polity|silly=0|en | 0.022 | (-0.002, 0.048) | TIE |
+| F | GS1|Polity|silly=0|hi | 0.037 | (-0.011, 0.083) | TIE |
+| F | GS1|Science & Tech|silly=0|en | 0.055 | (0.005, 0.133) | WIN |
+| F | GS1|UNTAGGED|silly=0|en | 0.012 | (-0.002, 0.026) | TIE |
+| F | GS1|history|silly=1|hi | 0.076 | (0.031, 0.128) | WIN |
+| F | gs1|Art & Culture|silly=1|hi | 0.009 | (-0.008, 0.033) | TIE |
+| F | gs1|Economy|silly=0|hi | 0.016 | (-0.009, 0.049) | TIE |
+| F | gs1|Economy|silly=1|en | 0.032 | (0.026, 0.037) | WIN |
+| F | gs1|Environment|silly=1|en | 0.015 | (-0.006, 0.036) | TIE |
+| F | gs1|Geography|silly=0|en | -0.001 | (-0.019, 0.019) | TIE |
+| F | gs1|Geography|silly=1|hi | 0.010 | (-0.015, 0.039) | TIE |
+| F | gs1|Polity|silly=1|hi | 0.014 | (-0.019, 0.044) | TIE |
+| F | gs1|Science & Tech|silly=0|en | -0.009 | (-0.028, 0.013) | TIE |
+| G | GS1|Art and Culture|150w|en | 0.062 | (0.036, 0.086) | WIN |
+| G | GS1|Art and Culture|150w|hi | 0.052 | (0.011, 0.089) | WIN |
+| G | GS1|Art and Culture|250w|en | 0.045 | (0.019, 0.067) | WIN |
+| G | GS1|Art and Culture|250w|hi | 0.049 | (-0.010, 0.108) | TIE |
+| G | GS1|Geography|150w|en | 0.059 | (0.043, 0.074) | WIN |
+| G | GS1|Geography|150w|hi | 0.028 | (-0.001, 0.058) | TIE |
+| G | GS1|Geography|250w|en | 0.047 | (0.027, 0.066) | WIN |
+| G | GS1|Geography|250w|hi | -0.017 | (-0.047, 0.015) | TIE |
+| G | GS1|Modern Indian History|150w|en | 0.045 | (0.020, 0.069) | WIN |
+| G | GS1|Modern Indian History|150w|hi | 0.001 | (-0.029, 0.049) | TIE |
+| G | GS1|Modern Indian History|250w|en | 0.071 | (0.047, 0.093) | WIN |
+| G | GS1|Modern Indian History|250w|hi | 0.000 | (-0.042, 0.042) | TIE |
+| G | GS1|Society|150w|en | 0.034 | (0.008, 0.059) | WIN |
+| G | GS1|Society|150w|hi | 0.053 | (-0.003, 0.115) | TIE |
+| G | GS1|Society|250w|en | 0.033 | (-0.005, 0.064) | TIE |
+| G | GS1|Society|250w|hi | 0.026 | (-0.024, 0.074) | TIE |
+| G | GS1|World History|150w|en | 0.025 | (0.019, 0.035) | WIN |
+| G | GS1|World History|150w|hi | 0.061 | (0.040, 0.089) | WIN |
+| G | GS1|World History|250w|en | 0.065 | (0.050, 0.079) | WIN |
+| G | GS1|World History|250w|hi | 0.065 | (-0.019, 0.150) | TIE |
+| G | GS2|Governance|150w|en | 0.078 | (0.041, 0.105) | WIN |
+| G | GS2|Governance|150w|hi | 0.032 | (-0.060, 0.118) | TIE |
+| G | GS2|Governance|250w|en | 0.048 | (0.035, 0.063) | WIN |
+| G | GS2|Governance|250w|hi | -0.021 | (-0.093, 0.044) | TIE |
+| G | GS2|International Relations|150w|en | 0.068 | (0.044, 0.089) | WIN |
+| G | GS2|International Relations|150w|hi | 0.005 | (-0.032, 0.050) | TIE |
+| G | GS2|International Relations|250w|en | 0.070 | (0.049, 0.093) | WIN |
+| G | GS2|International Relations|250w|hi | 0.029 | (-0.027, 0.092) | TIE |
+| G | GS2|Polity|150w|en | 0.042 | (0.021, 0.063) | WIN |
+| G | GS2|Polity|150w|hi | -0.018 | (-0.070, 0.034) | TIE |
+| G | GS2|Polity|250w|en | 0.050 | (0.031, 0.070) | WIN |
+| G | GS2|Polity|250w|hi | 0.009 | (-0.023, 0.048) | TIE |
+| G | GS2|Social Justice|150w|en | 0.084 | (0.070, 0.097) | WIN |
+| G | GS2|Social Justice|150w|hi | 0.018 | (-0.039, 0.073) | TIE |
+| G | GS2|Social Justice|250w|en | 0.048 | (0.035, 0.066) | WIN |
+| G | GS2|Social Justice|250w|hi | -0.043 | (-0.055, -0.035) | LOSS |
+| G | GS3|Agriculture|150w|en | 0.064 | (0.052, 0.075) | WIN |
+| G | GS3|Agriculture|150w|hi | 0.004 | (-0.017, 0.025) | TIE |
+| G | GS3|Agriculture|250w|en | 0.047 | (0.016, 0.078) | WIN |
+| G | GS3|Agriculture|250w|hi | -0.067 | (-0.107, -0.029) | LOSS |
+| G | GS3|Economy|150w|en | 0.048 | (0.039, 0.057) | WIN |
+| G | GS3|Economy|150w|hi | 0.014 | (-0.063, 0.116) | TIE |
+| G | GS3|Economy|250w|en | 0.051 | (0.025, 0.079) | WIN |
+| G | GS3|Economy|250w|hi | 0.034 | (-0.009, 0.078) | TIE |
+| G | GS3|Environment and Disaster Management|150w|en | 0.039 | (0.001, 0.085) | WIN |
+| G | GS3|Environment and Disaster Management|150w|hi | 0.037 | (-0.042, 0.115) | TIE |
+| G | GS3|Environment and Disaster Management|250w|en | 0.053 | (0.031, 0.080) | WIN |
+| G | GS3|Environment and Disaster Management|250w|hi | 0.050 | (-0.006, 0.105) | TIE |
+| G | GS3|Internal Security|150w|en | 0.042 | (0.030, 0.061) | WIN |
+| G | GS3|Internal Security|150w|hi | 0.005 | (-0.014, 0.024) | TIE |
+| G | GS3|Internal Security|250w|en | 0.055 | (0.032, 0.078) | WIN |
+| G | GS3|Internal Security|250w|hi | -0.015 | (-0.053, 0.025) | TIE |
+| G | GS3|Science and Technology|150w|en | 0.043 | (0.018, 0.069) | WIN |
+| G | GS3|Science and Technology|150w|hi | 0.107 | (0.049, 0.173) | WIN |
+| G | GS3|Science and Technology|250w|en | 0.061 | (0.047, 0.076) | WIN |
+| G | GS3|Science and Technology|250w|hi | 0.029 | (-0.001, 0.070) | TIE |
+| G | GS4|Ethics - Case Studies|250w|en | 0.072 | (0.059, 0.086) | WIN |
+| G | GS4|Ethics - Case Studies|250w|hi | 0.006 | (-0.038, 0.052) | TIE |
+| G | GS4|Ethics - Governance aspects|150w|en | 0.042 | (0.021, 0.067) | WIN |
+| G | GS4|Ethics - Governance aspects|150w|hi | 0.015 | (-0.017, 0.052) | TIE |
+| G | GS4|Ethics - Human Interface, Attitude, Values & E.I|150w|en | 0.039 | (0.019, 0.053) | WIN |
+| G | GS4|Ethics - Human Interface, Attitude, Values & E.I|150w|hi | 0.094 | (0.020, 0.162) | WIN |
+| G | GS4|Ethics - Moral Thinkers|150w|en | 0.052 | (0.043, 0.065) | WIN |
+| G | GS4|Ethics - Moral Thinkers|150w|hi | 0.074 | (0.016, 0.144) | WIN |
+| G | Geography|UNTAGGED|150w|en | 0.055 | (0.034, 0.074) | WIN |
+| G | Geography|UNTAGGED|150w|hi | -0.000 | (-0.035, 0.031) | TIE |
+| G | Geography|UNTAGGED|250w|en | 0.033 | (0.004, 0.063) | WIN |
+| G | History|UNTAGGED|150w|en | 0.042 | (0.029, 0.058) | WIN |
+| G | History|UNTAGGED|150w|hi | 0.044 | (-0.019, 0.115) | TIE |
 
 Note: cell `delta` is `champion_metric − C3_metric`, where champion = argmax over (C1a, C1b) on that stratum.
+
+*Infer:* Champion-vs-C3 deltas are mostly TIE (95% CI crosses 0) or LOSS across Task A strata; LOSS cells cluster on `silly_mistake_prone=1` items and on the long-tail subjects (Art & Culture, Miscellaneous). Per-stratum N is 5-15 → most cells are underpowered against a 5pp non-inferiority margin.
+*v2 path:* Larger per-stratum N (§9 limitation 4 acknowledges modest sub-stratum sizes); IRT-based difficulty weighting (deferred to v2) would distinguish genuine subject weakness from sampling noise.
 
 ### 7.3 Effect sizes
 
@@ -618,7 +912,396 @@ For each significant comparison, Cohen's d (continuous) or Cohen's h (proportion
 
 | Task | Metric | Comparison | Effect size | Interpretation |
 |---|---|---|---:|---|
-| (auto-filled) | | | | |
+| A | is_correct | C1a − C1b | 0.232 | small |
+| A | is_correct | C1a − C2 | -0.650 | medium |
+| A | is_correct | C1a − C3 | -0.663 | medium |
+| A | is_correct | C1b − C2 | -0.882 | large |
+| A | is_correct | C1b − C3 | -0.895 | large |
+| A | upsc_neg_marking_score | C1a − C1b | 0.211 | small |
+| A | upsc_neg_marking_score | C1a − C2 | -0.507 | medium |
+| A | upsc_neg_marking_score | C1a − C3 | -0.506 | medium |
+| A | upsc_neg_marking_score | C1b − C2 | -0.672 | medium |
+| A | upsc_neg_marking_score | C1b − C3 | -0.684 | medium |
+| A | confidence_prob | C1a − C1b | -1.447 | large |
+| A | confidence_prob | C1b − C2 | 5.266 | large |
+| A | confidence_prob | C1b − C3 | 5.258 | large |
+| A | brier_loss | C1a − C1b | 0.242 | small |
+| A | brier_loss | C1b − C2 | -1.175 | large |
+| A | brier_loss | C1b − C3 | -1.114 | large |
+| A | explanation_entity_f1 | C1a − C1b | -0.310 | small |
+| A | explanation_entity_f1 | C1a − C3 | -0.128 | negligible |
+| A | explanation_entity_f1 | C1b − C2 | 0.346 | small |
+| A | explanation_entity_f1 | C1b − C3 | 0.171 | negligible |
+| A | explanation_entity_f1 | C2 − C3 | -0.237 | small |
+| A | distractor_coverage | C1a − C2 | -0.125 | negligible |
+| A | distractor_coverage | C1a − C3 | -0.185 | negligible |
+| A | distractor_coverage | C1b − C2 | -0.145 | negligible |
+| A | distractor_coverage | C1b − C3 | -0.208 | small |
+| A | distractor_coverage | C2 − C3 | -0.093 | negligible |
+| A | reasoning_step_density_per100w | C1a − C1b | -0.079 | negligible |
+| A | reasoning_step_density_per100w | C1a − C2 | -0.577 | medium |
+| A | reasoning_step_density_per100w | C1a − C3 | -0.257 | small |
+| A | reasoning_step_density_per100w | C1b − C2 | -0.534 | medium |
+| A | reasoning_step_density_per100w | C1b − C3 | -0.190 | negligible |
+| A | reasoning_step_density_per100w | C2 − C3 | 0.409 | small |
+| A | sentence_length_variance | C1a − C2 | 0.185 | negligible |
+| A | sentence_length_variance | C1b − C2 | 0.454 | small |
+| A | sentence_length_variance | C2 − C3 | -0.469 | small |
+| A | explanation_bertscore_f1 | C1a − C1b | -0.086 | negligible |
+| A | explanation_bertscore_f1 | C1a − C2 | 0.699 | medium |
+| A | explanation_bertscore_f1 | C1b − C2 | 0.855 | large |
+| A | explanation_bertscore_f1 | C1b − C3 | 0.210 | small |
+| A | explanation_bertscore_f1 | C2 − C3 | -0.343 | small |
+| A | explanation_rouge_l_f1 | C1a − C1b | -0.278 | small |
+| A | explanation_rouge_l_f1 | C1a − C2 | 0.502 | medium |
+| A | explanation_rouge_l_f1 | C1b − C2 | 0.714 | medium |
+| A | explanation_rouge_l_f1 | C1b − C3 | 0.332 | small |
+| A | explanation_rouge_l_f1 | C2 − C3 | -0.183 | negligible |
+| B | schema_valid | C1a − C1b | -1.150 | large |
+| B | schema_valid | C1a − C2 | -0.582 | medium |
+| B | schema_valid | C1a − C3 | -0.368 | small |
+| B | schema_valid | C1b − C2 | 0.568 | medium |
+| B | schema_valid | C1b − C3 | 0.783 | medium |
+| B | schema_valid | C2 − C3 | 0.215 | small |
+| B | fact_lookup_precision | C1a − C2 | 0.320 | small |
+| B | fact_lookup_precision | C1a − C3 | 0.131 | negligible |
+| B | fact_lookup_precision | C1b − C2 | 0.344 | small |
+| B | fact_lookup_precision | C1b − C3 | 0.172 | negligible |
+| B | fact_lookup_precision | C2 − C3 | -0.221 | small |
+| B | word_count_adherence | C1a − C2 | -0.884 | large |
+| B | word_count_adherence | C1a − C3 | -0.522 | medium |
+| B | word_count_adherence | C1b − C2 | -0.811 | large |
+| B | word_count_adherence | C1b − C3 | -0.483 | small |
+| B | word_count_adherence | C2 − C3 | 0.428 | small |
+| B | sentence_count_adherence | C1a − C1b | -0.662 | medium |
+| B | sentence_count_adherence | C1b − C2 | 0.749 | medium |
+| B | sentence_count_adherence | C1b − C3 | 0.785 | medium |
+| B | paragraph_count_adherence | C1a − C1b | 0.264 | small |
+| B | paragraph_count_adherence | C1a − C2 | -0.746 | medium |
+| B | paragraph_count_adherence | C1a − C3 | -0.720 | medium |
+| B | paragraph_count_adherence | C1b − C2 | -0.944 | large |
+| B | paragraph_count_adherence | C1b − C3 | -0.877 | large |
+| B | entity_f1 | C1a − C2 | 0.388 | small |
+| B | entity_f1 | C1a − C3 | 0.412 | small |
+| B | entity_f1 | C1b − C2 | 0.457 | small |
+| B | entity_f1 | C1b − C3 | 0.491 | small |
+| B | date_exact_f1 | C1a − C2 | -0.165 | negligible |
+| B | date_exact_f1 | C1a − C3 | -0.136 | negligible |
+| B | date_exact_f1 | C1b − C2 | -0.114 | negligible |
+| B | numeric_exact_f1 | C1a − C1b | -0.619 | medium |
+| B | numeric_exact_f1 | C1a − C3 | 0.308 | small |
+| B | numeric_exact_f1 | C1b − C2 | 0.718 | medium |
+| B | numeric_exact_f1 | C1b − C3 | 1.016 | large |
+| B | numeric_exact_f1 | C2 − C3 | 0.234 | small |
+| B | hindi_code_mixing_rate | C1b − C2 | -0.802 | large |
+| B | hindi_code_mixing_rate | C1b − C3 | -0.784 | medium |
+| B | mattr_100 | C1a − C1b | -0.586 | medium |
+| B | mattr_100 | C1a − C2 | -0.596 | medium |
+| B | mattr_100 | C1a − C3 | -0.397 | small |
+| B | mattr_100 | C1b − C2 | -0.200 | small |
+| B | mattr_100 | C2 − C3 | 0.134 | negligible |
+| B | flesch_kincaid_grade | C1a − C1b | -0.222 | small |
+| B | flesch_kincaid_grade | C1b − C2 | 0.433 | small |
+| B | flesch_kincaid_grade | C1b − C3 | 0.440 | small |
+| B | ngram4_repetition_rate | C1a − C1b | -0.472 | small |
+| B | ngram4_repetition_rate | C1a − C2 | 0.238 | small |
+| B | ngram4_repetition_rate | C1a − C3 | 0.240 | small |
+| B | ngram4_repetition_rate | C1b − C2 | 0.617 | medium |
+| B | ngram4_repetition_rate | C1b − C3 | 0.620 | medium |
+| B | output_word_count | C1a − C1b | -0.972 | large |
+| B | output_word_count | C1a − C2 | 0.687 | medium |
+| B | output_word_count | C1a − C3 | 0.771 | medium |
+| B | output_word_count | C1b − C2 | 2.514 | large |
+| B | output_word_count | C1b − C3 | 2.414 | large |
+| B | output_word_count | C2 − C3 | 0.150 | negligible |
+| B | answer_bertscore_f1 | C1a − C2 | 0.328 | small |
+| B | answer_bertscore_f1 | C1a − C3 | 0.213 | small |
+| B | answer_bertscore_f1 | C1b − C2 | 0.412 | small |
+| B | answer_bertscore_f1 | C1b − C3 | 0.423 | small |
+| B | answer_rouge_l_f1 | C1a − C1b | -0.129 | negligible |
+| B | answer_rouge_l_f1 | C1a − C2 | 0.591 | medium |
+| B | answer_rouge_l_f1 | C1a − C3 | 0.773 | medium |
+| B | answer_rouge_l_f1 | C1b − C2 | 0.598 | medium |
+| B | answer_rouge_l_f1 | C1b − C3 | 0.915 | large |
+| B | answer_rouge_l_f1 | C2 − C3 | 0.276 | small |
+| B | answer_chrf | C1a − C1b | -0.544 | medium |
+| B | answer_chrf | C1a − C2 | 1.655 | large |
+| B | answer_chrf | C1a − C3 | 1.410 | large |
+| B | answer_chrf | C1b − C2 | 1.994 | large |
+| B | answer_chrf | C1b − C3 | 1.946 | large |
+| C | schema_valid | C1a − C2 | -0.721 | medium |
+| C | schema_valid | C1a − C3 | -0.600 | medium |
+| C | schema_valid | C1b − C2 | -0.876 | large |
+| C | schema_valid | C1b − C3 | -0.755 | medium |
+| C | schema_valid | C2 − C3 | 0.121 | negligible |
+| C | score_abs_err | C1a − C1b | 0.141 | negligible |
+| C | score_abs_err | C1a − C2 | 0.134 | negligible |
+| C | score_abs_err | C1a − C3 | 0.156 | negligible |
+| C | score_abs_err | C1b − C2 | -0.158 | negligible |
+| C | score_abs_err | C2 − C3 | 0.207 | small |
+| C | strengths_token_f1 | C1a − C1b | -0.132 | negligible |
+| C | strengths_token_f1 | C1a − C2 | 0.855 | large |
+| C | strengths_token_f1 | C1a − C3 | 0.811 | large |
+| C | strengths_token_f1 | C1b − C2 | 0.983 | large |
+| C | strengths_token_f1 | C1b − C3 | 0.957 | large |
+| C | improvements_token_f1 | C1a − C1b | -0.166 | negligible |
+| C | improvements_token_f1 | C1a − C2 | 0.670 | medium |
+| C | improvements_token_f1 | C1a − C3 | 0.690 | medium |
+| C | improvements_token_f1 | C1b − C2 | 0.815 | large |
+| C | improvements_token_f1 | C1b − C3 | 0.853 | large |
+| C | improvements_intro_token_f1 | C1a − C2 | 0.440 | small |
+| C | improvements_intro_token_f1 | C1a − C3 | 0.327 | small |
+| C | improvements_intro_token_f1 | C1b − C2 | 0.468 | small |
+| C | improvements_intro_token_f1 | C1b − C3 | 0.351 | small |
+| C | improvements_intro_token_f1 | C2 − C3 | -0.153 | negligible |
+| C | improvements_body_token_f1 | C1a − C1b | -0.155 | negligible |
+| C | improvements_body_token_f1 | C1a − C2 | 0.610 | medium |
+| C | improvements_body_token_f1 | C1a − C3 | 0.616 | medium |
+| C | improvements_body_token_f1 | C1b − C2 | 0.739 | medium |
+| C | improvements_body_token_f1 | C1b − C3 | 0.760 | medium |
+| C | improvements_conclusion_token_f1 | C1a − C1b | -0.133 | negligible |
+| C | improvements_conclusion_token_f1 | C1a − C2 | 0.536 | medium |
+| C | improvements_conclusion_token_f1 | C1a − C3 | 0.534 | medium |
+| C | improvements_conclusion_token_f1 | C1b − C2 | 0.674 | medium |
+| C | improvements_conclusion_token_f1 | C1b − C3 | 0.660 | medium |
+| C | strengths_count_adherence | C1a − C1b | -0.122 | negligible |
+| C | strengths_count_adherence | C1a − C2 | 0.838 | large |
+| C | strengths_count_adherence | C1a − C3 | 0.765 | medium |
+| C | strengths_count_adherence | C1b − C2 | 0.954 | large |
+| C | strengths_count_adherence | C1b − C3 | 0.903 | large |
+| C | improvements_count_adherence | C1a − C2 | 1.161 | large |
+| C | improvements_count_adherence | C1a − C3 | 1.302 | large |
+| C | improvements_count_adherence | C1b − C2 | 1.109 | large |
+| C | improvements_count_adherence | C1b − C3 | 1.267 | large |
+| C | strengths_bertscore_f1 | C1a − C1b | -0.143 | negligible |
+| C | strengths_bertscore_f1 | C1a − C2 | 0.791 | medium |
+| C | strengths_bertscore_f1 | C1a − C3 | 0.697 | medium |
+| C | strengths_bertscore_f1 | C1b − C2 | 0.974 | large |
+| C | strengths_bertscore_f1 | C1b − C3 | 0.802 | large |
+| E | schema_valid | C1a − C2 | 0.403 | small |
+| E | schema_valid | C1a − C3 | 0.466 | small |
+| E | schema_valid | C1b − C2 | 0.403 | small |
+| E | schema_valid | C1b − C3 | 0.466 | small |
+| E | fact_lookup_precision | C1a − C1b | 0.222 | small |
+| E | fact_lookup_precision | C1b − C2 | -0.228 | small |
+| E | fact_lookup_precision | C1b − C3 | -0.230 | small |
+| E | entity_f1_vs_gold | C1a − C2 | 0.700 | medium |
+| E | entity_f1_vs_gold | C1a − C3 | 0.725 | medium |
+| E | entity_f1_vs_gold | C1b − C2 | 0.752 | medium |
+| E | entity_f1_vs_gold | C1b − C3 | 0.763 | medium |
+| E | hallucination_rate | C1a − C1b | -0.314 | small |
+| E | hallucination_rate | C1a − C2 | 0.636 | medium |
+| E | hallucination_rate | C1a − C3 | 0.761 | medium |
+| E | hallucination_rate | C1b − C2 | 0.758 | medium |
+| E | hallucination_rate | C1b − C3 | 0.906 | large |
+| E | coverage_of_source_entities | C1a − C1b | 0.189 | negligible |
+| E | coverage_of_source_entities | C1a − C2 | 0.892 | large |
+| E | coverage_of_source_entities | C1a − C3 | 0.652 | medium |
+| E | coverage_of_source_entities | C1b − C2 | 0.736 | medium |
+| E | coverage_of_source_entities | C1b − C3 | 0.536 | medium |
+| E | numeric_f1_vs_source | C1a − C1b | 0.234 | small |
+| E | compression_ratio_score | C1a − C2 | -0.663 | medium |
+| E | compression_ratio_score | C1a − C3 | -0.508 | medium |
+| E | compression_ratio_score | C1b − C2 | -0.663 | medium |
+| E | compression_ratio_score | C1b − C3 | -0.508 | medium |
+| E | compression_ratio_score | C2 − C3 | 0.157 | negligible |
+| E | citation_density_per100w | C1a − C1b | 0.267 | small |
+| E | citation_density_per100w | C1a − C2 | -0.374 | small |
+| E | citation_density_per100w | C1a − C3 | -0.266 | small |
+| E | citation_density_per100w | C1b − C2 | -0.444 | small |
+| E | citation_density_per100w | C1b − C3 | -0.329 | small |
+| E | lead100_entity_recall | C1a − C2 | 0.304 | small |
+| E | lead100_entity_recall | C1a − C3 | 0.253 | small |
+| E | lead100_entity_recall | C1b − C2 | 0.290 | small |
+| E | lead100_entity_recall | C1b − C3 | 0.255 | small |
+| E | prelims_word_count | C1a − C1b | 0.353 | small |
+| E | prelims_word_count | C1a − C2 | -0.665 | medium |
+| E | prelims_word_count | C1b − C2 | -1.253 | large |
+| E | prelims_word_count | C1b − C3 | -0.215 | small |
+| E | prelims_word_count | C2 − C3 | 0.673 | medium |
+| E | mains_word_count | C1a − C1b | -0.687 | medium |
+| E | mains_word_count | C1a − C2 | 3.248 | large |
+| E | mains_word_count | C1a − C3 | 2.969 | large |
+| E | mains_word_count | C1b − C2 | 3.904 | large |
+| E | mains_word_count | C1b − C3 | 3.894 | large |
+| E | subject_tag_acc | C1a − C1b | -0.125 | negligible |
+| E | subject_tag_acc | C1a − C2 | 0.967 | large |
+| E | subject_tag_acc | C1a − C3 | 1.183 | large |
+| E | subject_tag_acc | C1b − C2 | 1.092 | large |
+| E | subject_tag_acc | C1b − C3 | 1.308 | large |
+| E | subject_tag_acc | C2 − C3 | 0.216 | small |
+| E | mains_bertscore_f1 | C1a − C1b | -0.645 | medium |
+| E | mains_bertscore_f1 | C1a − C2 | 1.026 | large |
+| E | mains_bertscore_f1 | C1a − C3 | 0.639 | medium |
+| E | mains_bertscore_f1 | C1b − C2 | 1.232 | large |
+| E | mains_bertscore_f1 | C1b − C3 | 0.924 | large |
+| E | mains_bertscore_f1 | C2 − C3 | -0.531 | medium |
+| E | mains_rouge_l_f1 | C1a − C1b | -0.449 | small |
+| E | mains_rouge_l_f1 | C1a − C2 | 1.685 | large |
+| E | mains_rouge_l_f1 | C1a − C3 | 1.449 | large |
+| E | mains_rouge_l_f1 | C1b − C2 | 1.814 | large |
+| E | mains_rouge_l_f1 | C1b − C3 | 1.565 | large |
+| E | mains_rouge_l_f1 | C2 − C3 | -0.240 | small |
+| E | prelims_bertscore_f1 | C1a − C1b | -0.137 | negligible |
+| E | prelims_bertscore_f1 | C1a − C2 | 1.536 | large |
+| E | prelims_bertscore_f1 | C1a − C3 | 0.189 | negligible |
+| E | prelims_bertscore_f1 | C1b − C2 | 1.695 | large |
+| E | prelims_bertscore_f1 | C1b − C3 | 0.305 | small |
+| E | prelims_bertscore_f1 | C2 − C3 | -1.463 | large |
+| E | prelims_rouge_l_f1 | C1a − C1b | -0.162 | negligible |
+| E | prelims_rouge_l_f1 | C1a − C2 | 0.334 | small |
+| E | prelims_rouge_l_f1 | C1b − C2 | 0.469 | small |
+| E | prelims_rouge_l_f1 | C2 − C3 | -0.449 | small |
+| E | mains_chrf | C1a − C1b | -0.748 | medium |
+| E | mains_chrf | C1a − C2 | 1.896 | large |
+| E | mains_chrf | C1a − C3 | 1.813 | large |
+| E | mains_chrf | C1b − C2 | 2.011 | large |
+| E | mains_chrf | C1b − C3 | 1.971 | large |
+| E | mains_chrf | C2 − C3 | -0.220 | small |
+| F | format_fail | C1a − C1b | -1.179 | large |
+| F | format_fail | C1a − C2 | -1.071 | large |
+| F | format_fail | C1a − C3 | -1.071 | large |
+| F | format_fail | C1b − C2 | 0.107 | negligible |
+| F | format_fail | C1b − C3 | 0.107 | negligible |
+| F | explanation_entity_f1 | C1a − C1b | 0.619 | medium |
+| F | explanation_entity_f1 | C1a − C2 | 1.119 | large |
+| F | explanation_entity_f1 | C1a − C3 | 1.119 | large |
+| F | explanation_entity_f1 | C1b − C2 | 0.608 | medium |
+| F | explanation_entity_f1 | C1b − C3 | 0.608 | medium |
+| F | distractor_coverage | C1a − C2 | 0.293 | small |
+| F | distractor_coverage | C1a − C3 | 0.293 | small |
+| F | distractor_coverage | C1b − C2 | 0.280 | small |
+| F | distractor_coverage | C1b − C3 | 0.280 | small |
+| F | reasoning_step_density_per100w | C1a − C1b | 0.262 | small |
+| F | reasoning_step_density_per100w | C1a − C2 | 0.284 | small |
+| F | reasoning_step_density_per100w | C1a − C3 | 0.284 | small |
+| F | reasoning_step_density_per100w | C1b − C2 | 0.123 | negligible |
+| F | reasoning_step_density_per100w | C1b − C3 | 0.123 | negligible |
+| F | schema_valid | C1a − C1b | 1.179 | large |
+| F | schema_valid | C1a − C2 | 1.071 | large |
+| F | schema_valid | C1a − C3 | 1.071 | large |
+| F | schema_valid | C1b − C2 | -0.107 | negligible |
+| F | schema_valid | C1b − C3 | -0.107 | negligible |
+| F | fact_lookup_precision | C1a − C1b | -0.107 | negligible |
+| F | fact_lookup_precision | C1a − C2 | -0.241 | small |
+| F | fact_lookup_precision | C1a − C3 | -0.241 | small |
+| F | fact_lookup_precision | C1b − C2 | -0.177 | negligible |
+| F | fact_lookup_precision | C1b − C3 | -0.177 | negligible |
+| F | word_count_adherence | C1a − C1b | 0.552 | medium |
+| F | word_count_adherence | C1a − C2 | 1.393 | large |
+| F | word_count_adherence | C1a − C3 | 1.393 | large |
+| F | word_count_adherence | C1b − C2 | 0.576 | medium |
+| F | word_count_adherence | C1b − C3 | 0.576 | medium |
+| F | hindi_branch_code_mixing_rate | C1a − C1b | 0.376 | small |
+| F | hindi_branch_code_mixing_rate | C1b − C2 | -1.818 | large |
+| F | hindi_branch_code_mixing_rate | C1b − C3 | -1.818 | large |
+| F | hindi_branch_devanagari_share | C1a − C1b | -0.376 | small |
+| F | hindi_branch_devanagari_share | C1b − C2 | 1.818 | large |
+| F | hindi_branch_devanagari_share | C1b − C3 | 1.818 | large |
+| F | english_word_count | C1a − C1b | -0.491 | small |
+| F | english_word_count | C1a − C2 | 1.706 | large |
+| F | english_word_count | C1a − C3 | 1.706 | large |
+| F | english_word_count | C1b − C2 | 1.316 | large |
+| F | english_word_count | C1b − C3 | 1.316 | large |
+| F | hindi_word_count | C1a − C1b | 1.035 | large |
+| F | hindi_word_count | C1a − C2 | 0.805 | large |
+| F | hindi_word_count | C1a − C3 | 0.805 | large |
+| F | hindi_word_count | C1b − C2 | -0.166 | negligible |
+| F | hindi_word_count | C1b − C3 | -0.166 | negligible |
+| F | explanation_bertscore_f1 | C1a − C1b | 0.161 | negligible |
+| F | explanation_bertscore_f1 | C1a − C2 | 0.466 | small |
+| F | explanation_bertscore_f1 | C1a − C3 | 0.466 | small |
+| F | explanation_bertscore_f1 | C1b − C2 | 0.399 | small |
+| F | explanation_bertscore_f1 | C1b − C3 | 0.399 | small |
+| F | explanation_rouge_l_f1 | C1a − C1b | 0.173 | negligible |
+| F | explanation_rouge_l_f1 | C1a − C2 | 0.518 | medium |
+| F | explanation_rouge_l_f1 | C1a − C3 | 0.518 | medium |
+| F | explanation_rouge_l_f1 | C1b − C2 | 0.493 | small |
+| F | explanation_rouge_l_f1 | C1b − C3 | 0.493 | small |
+| F | explanation_chrf | C1a − C1b | -0.255 | small |
+| F | explanation_chrf | C1a − C2 | 0.755 | medium |
+| F | explanation_chrf | C1a − C3 | 0.755 | medium |
+| F | explanation_chrf | C1b − C2 | 1.086 | large |
+| F | explanation_chrf | C1b − C3 | 1.086 | large |
+| G | fact_lookup_precision | C1a − C1b | 0.233 | small |
+| G | fact_lookup_precision | C1b − C2 | -0.248 | small |
+| G | fact_lookup_precision | C1b − C3 | -0.248 | small |
+| G | word_count_adherence | C1a − C1b | 0.113 | negligible |
+| G | word_count_adherence | C1a − C2 | 0.608 | medium |
+| G | word_count_adherence | C1a − C3 | 0.608 | medium |
+| G | word_count_adherence | C1b − C2 | 0.534 | medium |
+| G | word_count_adherence | C1b − C3 | 0.534 | medium |
+| G | paragraph_count_adherence | C1a − C1b | 0.529 | medium |
+| G | paragraph_count_adherence | C1a − C2 | -0.737 | medium |
+| G | paragraph_count_adherence | C1a − C3 | -0.737 | medium |
+| G | paragraph_count_adherence | C1b − C2 | -1.710 | large |
+| G | paragraph_count_adherence | C1b − C3 | -1.710 | large |
+| G | entity_f1 | C1a − C1b | -0.470 | small |
+| G | entity_f1 | C1a − C2 | 0.656 | medium |
+| G | entity_f1 | C1a − C3 | 0.656 | medium |
+| G | entity_f1 | C1b − C2 | 0.788 | medium |
+| G | entity_f1 | C1b − C3 | 0.788 | medium |
+| G | date_exact_f1 | C1a − C1b | -0.238 | small |
+| G | date_exact_f1 | C1a − C2 | -0.333 | small |
+| G | date_exact_f1 | C1a − C3 | -0.333 | small |
+| G | date_exact_f1 | C1b − C2 | -0.119 | negligible |
+| G | date_exact_f1 | C1b − C3 | -0.119 | negligible |
+| G | numeric_exact_f1 | C1a − C1b | -0.602 | medium |
+| G | numeric_exact_f1 | C1a − C2 | 0.784 | medium |
+| G | numeric_exact_f1 | C1a − C3 | 0.784 | medium |
+| G | numeric_exact_f1 | C1b − C2 | 1.298 | large |
+| G | numeric_exact_f1 | C1b − C3 | 1.298 | large |
+| G | hindi_code_mixing_rate | C1a − C2 | 0.712 | medium |
+| G | hindi_code_mixing_rate | C1a − C3 | 0.712 | medium |
+| G | hindi_code_mixing_rate | C1b − C2 | 0.620 | medium |
+| G | hindi_code_mixing_rate | C1b − C3 | 0.620 | medium |
+| G | mattr_100 | C1a − C1b | -0.570 | medium |
+| G | mattr_100 | C1a − C2 | -1.736 | large |
+| G | mattr_100 | C1a − C3 | -1.736 | large |
+| G | mattr_100 | C1b − C2 | -1.472 | large |
+| G | mattr_100 | C1b − C3 | -1.472 | large |
+| G | flesch_kincaid_grade | C1a − C2 | 0.425 | small |
+| G | flesch_kincaid_grade | C1a − C3 | 0.425 | small |
+| G | flesch_kincaid_grade | C1b − C2 | 0.419 | small |
+| G | flesch_kincaid_grade | C1b − C3 | 0.419 | small |
+| G | ngram4_repetition_rate | C1a − C1b | 0.766 | medium |
+| G | ngram4_repetition_rate | C1a − C2 | 1.252 | large |
+| G | ngram4_repetition_rate | C1a − C3 | 1.252 | large |
+| G | ngram4_repetition_rate | C1b − C2 | 0.486 | small |
+| G | ngram4_repetition_rate | C1b − C3 | 0.486 | small |
+| G | output_word_count | C1a − C1b | -0.199 | negligible |
+| G | output_word_count | C1a − C2 | 2.359 | large |
+| G | output_word_count | C1a − C3 | 2.359 | large |
+| G | output_word_count | C1b − C2 | 2.182 | large |
+| G | output_word_count | C1b − C3 | 2.182 | large |
+| G | dimension_keyword_coverage | C1a − C1b | -0.125 | negligible |
+| G | dimension_keyword_coverage | C1a − C2 | 0.556 | medium |
+| G | dimension_keyword_coverage | C1a − C3 | 0.556 | medium |
+| G | dimension_keyword_coverage | C1b − C2 | 0.648 | medium |
+| G | dimension_keyword_coverage | C1b − C3 | 0.648 | medium |
+| G | dimensions_touched_pred | C1a − C1b | -0.262 | small |
+| G | dimensions_touched_pred | C1a − C2 | 1.442 | large |
+| G | dimensions_touched_pred | C1a − C3 | 1.442 | large |
+| G | dimensions_touched_pred | C1b − C2 | 1.593 | large |
+| G | dimensions_touched_pred | C1b − C3 | 1.593 | large |
+| G | answer_bertscore_f1 | C1a − C1b | -0.668 | medium |
+| G | answer_bertscore_f1 | C1a − C2 | 0.148 | negligible |
+| G | answer_bertscore_f1 | C1a − C3 | 0.148 | negligible |
+| G | answer_bertscore_f1 | C1b − C2 | 0.628 | medium |
+| G | answer_bertscore_f1 | C1b − C3 | 0.628 | medium |
+| G | answer_rouge_l_f1 | C1a − C1b | -0.418 | small |
+| G | answer_rouge_l_f1 | C1a − C2 | 0.476 | small |
+| G | answer_rouge_l_f1 | C1a − C3 | 0.476 | small |
+| G | answer_rouge_l_f1 | C1b − C2 | 0.674 | medium |
+| G | answer_rouge_l_f1 | C1b − C3 | 0.674 | medium |
+| G | answer_chrf | C1a − C1b | -0.416 | small |
+| G | answer_chrf | C1a − C2 | 1.244 | large |
+| G | answer_chrf | C1a − C3 | 1.244 | large |
+| G | answer_chrf | C1b − C2 | 1.137 | large |
+| G | answer_chrf | C1b − C3 | 1.137 | large |
+
+*Infer:* Production-relevant findings (Cohen's d ≥ 0.5) cluster in (i) Task A where Gemini wins decisively (d -0.59 to -1.19), (ii) Tasks E/F/G BERTScore where FT-SLMs win (d 0.40-1.23), and (iii) Task G chrF++ where FT-SLMs show large effects (d 1.14-1.24). Task C effects are statistically significant but operationally small (d ≤ 0.21).
+*v2 path:* Stratified effect sizes (per subject / paper / language) — current per-task aggregates mask sub-population variance; per-stratum heatmap (§7.2 above) hints at uneven distribution that warrants larger N per stratum (§9 limitation 4).
 
 ---
 

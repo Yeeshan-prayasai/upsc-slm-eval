@@ -10,9 +10,20 @@ secrets/
 .anthropic/
 .google/
 
-# Result store (contains predictions derived from student PII)
-results/
+# Result store (contains predictions derived from student PII).
+# Private-repo carve-out below: we DO commit the final aggregated artifacts
+# (no raw student answers, only model outputs + scoring metrics) so the
+# experiment record survives outside EC2 / M5.
+results/predictions.parquet
+results/shards/
 runs/
+# Whitelist the analysis-ready files only (no per-student raw input):
+!results/scores_tier1.parquet
+!results/aggregate.parquet
+!results/aggregate.extras.json
+!results/hypothesis_tests.parquet
+!results/stratum_heatmap.parquet
+!results/pre_ft_hindi_probe.parquet
 
 # Data artifacts (large, deterministically rebuilt from Postgres)
 data/*.parquet
@@ -34,6 +45,7 @@ data/ft_split/
 #     trainer_state.json is relocated to adapters/<name>/trainer_state_final.json and
 #     committed there.
 adapters/*-merged/
+adapters/*-mlx/
 adapters/*/checkpoint-*/
 
 # Catch-all model-weight rules — apply AFTER the explicit allows below so the
@@ -87,3 +99,4 @@ Thumbs.db
 
 # Streamlit
 .streamlit/secrets.toml
+api-key

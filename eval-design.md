@@ -14,8 +14,8 @@ This document specifies *what we measure*, *how it is computed*, and *which libr
 |---|---|---|
 | **C1a** | FT-SLM: `google/gemma-4-E4B-it` + LoRA multi-task adapter (tasks A+B+C+E) | Local via MLX-LM on M5 16GB |
 | **C1b** | FT-SLM: `Qwen/Qwen3.5-4B` + LoRA multi-task adapter (same recipe as C1a) | Local via MLX-LM on M5 16GB; native MLX build `mlx-community/Qwen3.5-4B-MLX-4bit` |
-| **C2** | `gemini-3-flash`, zero-shot | Google API, single prompt with task instruction only. Pricing: $0.50/M input, $3.00/M output (May 2026 published rate) |
-| **C3** | `gemini-3-flash`, few-shot | Google API, with 3 task-matched UPSC exemplars in the prompt |
+| **C2** | `gemini-3.5-flash`, zero-shot | Google API, single prompt with task instruction only. Pricing: $0.50/M input, $3.00/M output (May 2026 published rate). Pre-registration named `gemini-3-flash`; the actual generateContent API exposes `gemini-3.5-flash` as the live current-default flash-tier model and `gemini-3-flash-preview` as the still-preview variant. Switched at v1 inference time and recorded in `model_version` per prediction. The model name is env-configurable via `GEMINI_MODEL`. |
+| **C3** | `gemini-3.5-flash`, few-shot | Google API, with 3 task-matched UPSC exemplars in the prompt. Same model swap as C2. |
 
 ---
 

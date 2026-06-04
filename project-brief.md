@@ -79,6 +79,12 @@ Or, more modestly:
 
 If both fail, we've learned the gap is currently unrecoverable at this size — a real, decision-relevant finding.
 
+## v1 outcome (2026-06-04)
+
+**3 of 4 core tasks WIN at q ≤ 0.05 BH-FDR with dual-test agreement.** Mains generation (Task B), Mains rubric grading (Task C, where Qwen-FT halves Gemini's score error), and Current Affairs synthesis (Task E) all show statistically reliable wins for the FT-SLM champion over `gemini-3.5-flash` few-shot. Prelims MCQ (Task A) is the lone LOSS — Gemini wins by 23-50 percentage points (English 88 % vs FT 65 %; Hindi 93 % vs FT 64 % for Gemma / 43 % for Qwen). The two production-prompt capability tests (F, G) reinforce the FT path: the fine-tuned models follow the prayas bilingual Prelims-explanation format with 3.6× higher distractor coverage than Gemini, and produce 2.8× more PESEE-dimension coverage on the 21 KB Mains DSL prompt.
+
+The pre-registered "strong-win" criterion (champion beats C3 on ≥3 of 4 tasks **with margin**) is not met because Task A's loss is too large. The "non-inferiority within 5 pp" criterion is met for B/C/E but **not** for A. Net read: **a hybrid deployment** — Gemini for Prelims MCQ and Hindi-heavy queries; the FT-SLM for rubric grading + Mains generation + Current Affairs + production-prompt drop-ins — captures most of the win at a fraction of the API cost. Full numbers and discussion in [`experiment-report.md §6` / §8](experiment-report.md); summary in [`v1-summary.md`](v1-summary.md).
+
 ---
 
 ## Timeline

@@ -21,29 +21,6 @@ st.caption(
     "Useful for sanity-checking aggregate-level findings."
 )
 
-# Per-Row Drill reads two PII-bearing files that are intentionally
-# `.gitignore`'d: `results/predictions.parquet` (model outputs on real
-# UPSC eval items) and `data/eval_set.parquet` (the frozen question
-# set). On a public-cloud deploy these files are absent — surface a
-# friendly notice and stop the page early instead of throwing
-# FileNotFoundError.
-_pred_path = data_utils.RESULTS / "predictions.parquet"
-_eval_path = data_utils.DATA / "eval_set.parquet"
-if not _pred_path.exists() or not _eval_path.exists():
-    st.warning(
-        "**Per-Row Drill unavailable in this deployment.**\n\n"
-        "This page reads `results/predictions.parquet` and `data/eval_set.parquet`, "
-        "both of which contain real UPSC question items + per-student-derived "
-        "predictions. They're gitignored for privacy and aren't shipped to the "
-        "public Streamlit Cloud deploy.\n\n"
-        "To run this page:\n"
-        "1. Clone the repo locally.\n"
-        "2. Restore the eval-set + predictions parquets from the secure store "
-        "(see `scripts/freeze_eval_set.py` + `scripts/run_inference.py`).\n"
-        "3. `streamlit run dashboard/app.py`"
-    )
-    st.stop()
-
 predictions = data_utils.load_predictions()
 scores = data_utils.load_scores_tier1()
 eval_set = data_utils.load_eval_set()

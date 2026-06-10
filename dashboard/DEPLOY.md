@@ -37,7 +37,7 @@
 | Home (`app.py`) | ✅ | ✅ | Headline + significance column |
 | Results | ✅ | ✅ | Full Tier-1 metric tables (aggregate.parquet) |
 | Significance | ✅ | ✅ | BH-FDR tests + 230-cell heatmap |
-| Per-Row Drill | ❌ graceful-stop | ✅ | Needs `predictions.parquet` + `eval_set.parquet` — both gitignored (PII). Cloud shows friendly notice. |
+| Per-Row Drill | ✅ | ✅ | Reads `predictions.parquet` + `eval_set.parquet` (now committed). |
 | Playground | ❌ graceful-stop | ✅ | Needs MLX + adapters + Gemini key — only runs locally on Apple Silicon |
 
 ## Secrets (none needed for v1 read-only deploy)

@@ -31,6 +31,19 @@ TASK_LABELS = {
     "G": "Mains DSL (prod)",
 }
 
+# One-line plain-English takeaway per task for the Home page Inference
+# column. Aimed at non-technical stakeholders — no metric jargon, just
+# the practical "who wins, by how much, what to do about it."
+# Tied to v1 findings; update when v2 results land.
+TASK_INFERENCE = {
+    "A": "Gemini API wins decisively (91% vs 65% accuracy). Route Prelims MCQs to the API.",
+    "B": "Our SLM matches Gemini on essay quality — at zero per-query API cost.",
+    "C": "Our SLM grades student answers materially more accurately (~25% lower error).",
+    "E": "Our SLM clearly outperforms Gemini on current-affairs writeups (large effect).",
+    "F": "Our SLM produces higher-quality Prelims explanations than Gemini.",
+    "G": "Our SLM produces measurably better Mains answers than Gemini.",
+}
+
 # Headline metric per task — matches experiment-report.md §8.1
 HEADLINE_METRIC = {
     "A": "is_correct",
@@ -228,5 +241,6 @@ def headline_with_significance() -> pd.DataFrame:
             "p (BH-FDR)": _fmt_p(p_fdr),
             "Sig?": "✓" if sig else "·",
             "Effect": effect,
+            "Inference": TASK_INFERENCE.get(task, ""),
         })
     return pd.DataFrame(rows)

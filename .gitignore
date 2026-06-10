@@ -10,23 +10,25 @@ secrets/
 .anthropic/
 .google/
 
-# Result store (contains predictions derived from student PII).
-# Private-repo carve-out below: we DO commit the final aggregated artifacts
-# (no raw student answers, only model outputs + scoring metrics) so the
-# experiment record survives outside EC2 / M5.
-results/predictions.parquet
+# Result store. The Streamlit Cloud dashboard's Per-Row Drill page needs
+# the predictions parquet, so we now commit it. Raw inference shards stay
+# excluded (they're large, reproducible from predictions.parquet).
 results/shards/
 runs/
-# Whitelist the analysis-ready files only (no per-student raw input):
+# Whitelist analysis-ready files committed for dashboard + experiment record:
 !results/scores_tier1.parquet
 !results/aggregate.parquet
 !results/aggregate.extras.json
 !results/hypothesis_tests.parquet
 !results/stratum_heatmap.parquet
 !results/pre_ft_hindi_probe.parquet
+!results/predictions.parquet
 
-# Data artifacts (large, deterministically rebuilt from Postgres)
+# Data artifacts (large, deterministically rebuilt from Postgres).
+# eval_set.parquet is whitelisted below so the dashboard can render the
+# Per-Row Drill page on the deployed app.
 data/*.parquet
+!data/eval_set.parquet
 data/*.jsonl
 data/*.sha256
 data/hindi_probe.parquet

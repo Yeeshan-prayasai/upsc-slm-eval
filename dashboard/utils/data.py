@@ -36,7 +36,7 @@ TASK_LABELS = {
 # the practical "who wins, by how much, what to do about it."
 # Tied to v1 findings; update when v2 results land.
 TASK_INFERENCE = {
-    "A": "Gemini API wins decisively (91% vs 65% accuracy). Route Prelims MCQs to the API.",
+    "A": "SLMs lack the factual breadth (Articles, dates, schemes) that Prelims MCQs reward. v2 pretraining on NCERT + current affairs is built to close this gap.",
     "B": "Our SLM matches Gemini on essay quality — at zero per-query API cost.",
     "C": "Our SLM grades student answers materially more accurately (~25% lower error).",
     "E": "Our SLM clearly outperforms Gemini on current-affairs writeups (large effect).",
@@ -231,16 +231,12 @@ def headline_with_significance() -> pd.DataFrame:
 
         rows.append({
             "Task": f"{task} — {TASK_LABELS[task]}",
-            "Metric": metric,
-            "Champion": CONDITION_LABELS[champion],
             "Gemma-FT": means.get("C1a", float("nan")),
             "Qwen-FT": means.get("C1b", float("nan")),
-            "Gemini ZS": means.get("C2", float("nan")),
             "Gemini FS": means.get("C3", float("nan")),
-            "Δ (Champ − FS)": _fmt_delta(delta, metric),
-            "p (BH-FDR)": _fmt_p(p_fdr),
-            "Sig?": "✓" if sig else "·",
-            "Effect": effect,
+            "Δ vs Gemini": _fmt_delta(delta, metric),
+            "p": _fmt_p(p_fdr),
+            "Sig": "✓" if sig else "·",
             "Inference": TASK_INFERENCE.get(task, ""),
         })
     return pd.DataFrame(rows)

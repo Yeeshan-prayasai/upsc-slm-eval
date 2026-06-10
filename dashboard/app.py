@@ -39,17 +39,39 @@ st.markdown(
 
 headline = data_utils.headline_with_significance()
 if not headline.empty:
-    # Format the float-mean columns to 3dp for display (keep numeric for sort)
-    fmt_cols = ["Gemma-FT", "Qwen-FT", "Gemini ZS", "Gemini FS"]
-    styled = headline.style.format({c: "{:.3f}" for c in fmt_cols})
-    st.dataframe(styled, hide_index=True, use_container_width=True)
+    # Use column_config to set explicit widths so the whole table fits
+    # without horizontal scroll. Inference is the wide-wrap column; the
+    # numeric/stat columns are narrow.
+    st.dataframe(
+        headline,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Task": st.column_config.TextColumn("Task", width="small"),
+            "Gemma-FT": st.column_config.NumberColumn("Gemma-FT", format="%.3f", width="small"),
+            "Qwen-FT": st.column_config.NumberColumn("Qwen-FT", format="%.3f", width="small"),
+            "Gemini FS": st.column_config.NumberColumn("Gemini FS", format="%.3f", width="small"),
+            "Δ vs Gemini": st.column_config.TextColumn(
+                "Δ vs Gemini", width="small",
+                help="Champion FT model minus Gemini few-shot, sign-normalized "
+                     "so positive = our SLM wins (true even on Task C where "
+                     "lower-is-better)."),
+            "p": st.column_config.TextColumn(
+                "p", width="small",
+                help="Benjamini-Hochberg-corrected p-value (paired bootstrap)."),
+            "Sig": st.column_config.TextColumn(
+                "Sig", width="small",
+                help="✓ = dual-test (paired-t AND Wilcoxon) both clear q=0.05."),
+            "Inference": st.column_config.TextColumn(
+                "Inference", width="large",
+                help="One-line plain-English takeaway for non-technical readers."),
+        },
+        row_height=72,   # tall rows so the wrapped Inference text stays readable
+    )
     st.caption(
-        "**Δ (Champ − FS)** is sign-normalized: positive = champion beats Gemini few-shot, "
-        "for all metrics including Task C's `score_abs_err` (lower-is-better). "
-        "**p (BH-FDR)** is the Benjamini-Hochberg-corrected paired-bootstrap p across all ~40 "
-        "primary cells; **Sig? ✓** means the dual-test (paired-t AND Wilcoxon) both clear q=0.05. "
-        "**Effect** is Cohen's d/h with the conventional small/medium/large label. "
-        "All numbers are the language=all stratum — see **Results** for per-language breakdown."
+        "Numbers are the language=all stratum. **Δ vs Gemini** is the paired-test delta "
+        "(champion FT minus Gemini few-shot, sign-normalized). See **Significance** for "
+        "the full BH-FDR-corrected pairwise table + per-language breakdown."
     )
 
 # ---------- Findings ----------

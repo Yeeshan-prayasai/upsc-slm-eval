@@ -1,0 +1,16 @@
+# Streamlit runtime config — used by both local `streamlit run` and
+# Streamlit Cloud. Keep this minimal; theme + server tweaks only.
+
+[theme]
+base = "light"
+primaryColor = "#7C3AED"        # prayas violet
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F8FAFC"
+textColor = "#0F172A"
+font = "sans serif"
+
+[server]
+# Streamlit Cloud overrides these but local-dev benefits from the same.
+runOnSave = false
+fileWatcherType = "auto"
+maxUploadSize = 50

@@ -1,0 +1,15 @@
+# Streamlit Cloud deployment requirements — dashboard only.
+#
+# Minimal subset of the full project requirements.txt sufficient to run
+# the read-only dashboard pages (Home, Results, Significance, Per-Row
+# Drill). The Playground page additionally needs `mlx_lm` + `google-
+# generativeai` + adapter checkpoints; it gracefully degrades on
+# environments where those aren't available (see pages/4_Playground.py).
+#
+# Pins match the project root requirements.txt so the deployed
+# dashboard reads parquet files written by the same library versions.
+
+streamlit==1.42.0
+pandas==2.2.3
+pyarrow==18.1.0
+numpy==2.1.3

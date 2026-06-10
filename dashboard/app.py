@@ -66,7 +66,6 @@ if not headline.empty:
                 "Inference", width="large",
                 help="One-line plain-English takeaway for non-technical readers."),
         },
-        row_height=72,   # tall rows so the wrapped Inference text stays readable
     )
     st.caption(
         "Numbers are the language=all stratum. **Δ vs Gemini** is the paired-test delta "

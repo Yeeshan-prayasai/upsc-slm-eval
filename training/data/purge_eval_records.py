@@ -28,7 +28,6 @@ from .acquire._base import RepoPaths
 from .clean import END_RECORD_DELIM
 from .leakage import (
     EVAL_SET,
-    NGRAM_N,
     _gram_hash,
     build_eval_index,
     question_hash,
@@ -37,15 +36,21 @@ from .leakage import (
 
 REPO = RepoPaths.root()
 CPT_CLEAN_DEDUP = REPO / "data" / "cpt_clean_dedup"
+# The in-training pulse probe must be as protected as the locked eval
+# set — if the probe questions are in the corpus, the mid-training
+# Task-A trend measures memorization, not learning.
+HOLDOUT = REPO / "data" / "eval_set_holdout.parquet"
 
 
-def _record_leaks(text: str, hash_to_qid: dict, gram_to_qids: dict) -> bool:
+def _record_leaks(text: str, hash_to_qid: dict, gram_to_qids: dict,
+                  gram_lengths) -> bool:
     if question_hash(text) in hash_to_qid:
         return True
     toks = tokenize_loose(text)
-    for i in range(len(toks) - NGRAM_N + 1):
-        if _gram_hash(tuple(toks[i:i + NGRAM_N])) in gram_to_qids:
-            return True
+    for n in gram_lengths:
+        for i in range(len(toks) - n + 1):
+            if _gram_hash(tuple(toks[i:i + n])) in gram_to_qids:
+                return True
     return False
 
 
@@ -59,7 +64,9 @@ def purge(root: Path = CPT_CLEAN_DEDUP) -> int:
        the document (dropping all of Laxmikanth over an appendix
        question would be absurd)."""
     import re
-    _, hash_to_qid, gram_to_qids = build_eval_index(EVAL_SET)
+    _, hash_to_qid, gram_to_qids, gram_lengths = build_eval_index([EVAL_SET, HOLDOUT])
+    print(f"[purge] index covers locked eval set + pulse holdout "
+          f"({'present' if HOLDOUT.exists() else 'ABSENT — probe unprotected!'})")
     total_in = total_dropped = 0
 
     txts = [f for f in sorted(root.rglob("*.txt"))
@@ -72,7 +79,7 @@ def purge(root: Path = CPT_CLEAN_DEDUP) -> int:
             if not rec.strip():
                 continue
             total_in += 1
-            if _record_leaks(rec, hash_to_qid, gram_to_qids):
+            if _record_leaks(rec, hash_to_qid, gram_to_qids, gram_lengths):
                 dropped += 1
                 continue
             kept.append(rec.strip())
@@ -93,7 +100,7 @@ def purge(root: Path = CPT_CLEAN_DEDUP) -> int:
             if not para.strip():
                 continue
             total_in += 1
-            if _record_leaks(para, hash_to_qid, gram_to_qids):
+            if _record_leaks(para, hash_to_qid, gram_to_qids, gram_lengths):
                 dropped += 1
                 continue
             kept.append(para)

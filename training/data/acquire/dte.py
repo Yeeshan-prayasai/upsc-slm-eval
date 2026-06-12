@@ -62,8 +62,13 @@ def discover(client: HttpClient, since: datetime, limit: int) -> list[DTEArticle
     """Daily sitemaps newest-first, windowed to `since`, filtered to the
     focus sections. Stops early once `limit` articles are collected."""
     r = client.fetch(SITEMAP_INDEX)
+    # Quintype serves sitemaps as `text/xml` with no charset parameter, so
+    # `r.text` decodes the UTF-8 body as ISO-8859-1 (requests' RFC 2616
+    # default). Non-ASCII slugs (el-niño, Belém …) mojibake into Ã±/Ã© and
+    # the article fetch then double-encodes them (%C3%83%C2%B1) → 404.
+    # The XML prolog declares UTF-8; decode explicitly.
     dailies: list[tuple[datetime, str]] = []
-    for u in re.findall(r"<loc>([^<]+)</loc>", r.text):
+    for u in re.findall(r"<loc>([^<]+)</loc>", r.content.decode("utf-8", "replace")):
         m = DAILY_RE.search(u)
         if not m:
             continue
@@ -77,7 +82,7 @@ def discover(client: HttpClient, since: datetime, limit: int) -> list[DTEArticle
     seen: set[str] = set()
     for i, (_, sm) in enumerate(dailies, start=1):
         r = client.fetch(sm)
-        for u in re.findall(r"<loc>([^<]+)</loc>", r.text):
+        for u in re.findall(r"<loc>([^<]+)</loc>", r.content.decode("utf-8", "replace")):
             parts = urlparse(u).path.strip("/").split("/")
             if len(parts) != 2 or parts[0] not in SECTIONS or u in seen:
                 continue
@@ -126,6 +131,10 @@ def acquire_article(
     if extracted is None:
         return "skipped-empty", 0
     title, md = extracted
+    # The embedded-JSON paywall flag doesn't fire on server-rendered teaser
+    # pages; the rendered body carries a subscribe call-to-action instead.
+    if "To Continue Reading Subscribe" in md or "downtoearth.org.in/subscription" in md:
+        return "skipped-paywalled", 0
     header = f"# {title}\n\n" if title and not md.startswith("#") else ""
     payload = (header + md).encode("utf-8")
     dest_dir = RepoPaths.cpt_raw("dte") / art.section

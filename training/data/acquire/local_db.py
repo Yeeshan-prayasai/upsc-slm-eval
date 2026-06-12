@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sqlite3
 import sys
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ import pandas as pd
 from ._base import Manifest, ManifestEntry, RepoPaths, now_iso
 
 REPO = RepoPaths.root()
-SNAPSHOT = REPO / "data" / "prayas_local.sqlite"
+SNAPSHOT = RepoPaths.db_snapshot()
 EVAL_SET = REPO / "data" / "eval_set.parquet"
 
 
@@ -48,13 +49,15 @@ class Extract:
     id_column: str
     label_columns: list[str]
     filters: list[str]
-    eval_id_column: str | None = None  # which eval_set row.question_id maps to this table
+    eval_id_column: str | None = None
+    source: str = "local_db"  # which eval_set row.question_id maps to this table
 
 
 # Order matters only for logging; rows from each table go to their own file.
 EXTRACTS: list[Extract] = [
     Extract(
         table="prelims_pyq_questions",
+        source="qa_bank",
         text_columns=["question", "explanation"],
         id_column="question_id",
         label_columns=["year", "paper", "subject"],
@@ -63,6 +66,7 @@ EXTRACTS: list[Extract] = [
     ),
     Extract(
         table="pyqs",
+        source="qa_bank",
         text_columns=["question", "model_answer", "hints"],
         id_column="question_id",
         label_columns=["paper", "subject", "year", "section", "word_count"],
@@ -71,14 +75,16 @@ EXTRACTS: list[Extract] = [
     ),
     Extract(
         table="mcqs",
+        source="qa_bank",
         text_columns=["questionText", "explanation"],
         id_column="id",
         label_columns=["paper", "question_pattern"],
         filters=[],
-        eval_id_column=None,   # mcqs is a separate pool from eval-locked pyq sets
+        eval_id_column="id",   # eval + pulse-holdout rows must not enter the corpus
     ),
     Extract(
         table="evaluation_questions",
+        source="qa_bank",
         text_columns=["question_text", "answer_text", "strengths",
                       "improvements", "model_answer"],
         id_column="question_id",
@@ -105,16 +111,18 @@ EXTRACTS: list[Extract] = [
     ),
     Extract(
         table="upsc_prelims_ai_generated_que",
+        source="qa_bank",
         # English-only columns; the Hindi variants stay deferred to v2-hindi-strategy.
         text_columns=["question_english", "options_english", "explanation"],
         id_column="id",
         label_columns=["subject", "topic", "difficulty", "month", "year"],
         filters=["quality_pass_flag = 1",
                  "question_english IS NOT NULL AND TRIM(question_english) <> ''"],
-        eval_id_column=None,
+        eval_id_column="id",
     ),
     Extract(
         table="article_generated_questions",
+        source="qa_bank",
         text_columns=["question", "options", "model_answer", "explanation", "hints"],
         id_column="question_id",
         label_columns=["paper", "subject", "year", "difficulty", "type"],
@@ -133,23 +141,65 @@ EXTRACTS: list[Extract] = [
 
 
 def _load_eval_ids() -> set[str]:
-    """Frozen eval-set question_ids — any row whose id is here is
-    skipped at extract time to prevent corpus leakage."""
-    if not EVAL_SET.exists():
-        return set()
-    df = pd.read_parquet(EVAL_SET, columns=["question_id"])
-    return set(df["question_id"].astype(str).tolist())
+    """Ids whose rows are skipped at extract time to prevent corpus
+    leakage: locked-eval question ids reduced to BASE UUIDs (eval ids
+    are namespaced `<ns>:<uuid>:<lang>` while DB primary keys are bare
+    uuids — comparing the namespaced string never matched, which made
+    this guard dead code), plus the in-training pulse holdout ids
+    (bare uuids) so the probe is never inside the training corpus."""
+    out: set[str] = set()
+    if EVAL_SET.exists():
+        for q in pd.read_parquet(EVAL_SET, columns=["question_id"])["question_id"].astype(str):
+            parts = q.split(":")
+            out.add(parts[1] if len(parts) >= 2 else q)
+    holdout = REPO / "data" / "eval_set_holdout.parquet"
+    if holdout.exists():
+        out |= set(pd.read_parquet(holdout, columns=["question_id"])["question_id"].astype(str))
+    return out
+
+
+_DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]")
+
+
+def _render_value(col: str, v) -> str:
+    """Render one column to readable English text. JSON-typed columns
+    (options, hints, model_answer) are dumped as raw JSON by the snapshot
+    — rendering them verbatim injected literal `{"a": ...}` braces AND
+    Hindi option variants into the English CPT text. Parse them: prefer
+    an English sub-dict, render option dicts as 'A) text' lines, and drop
+    Devanagari-dominant values."""
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if not s:
+        return ""
+    if s[0] in "{[":
+        try:
+            obj = json.loads(s)
+        except (ValueError, TypeError):
+            obj = None
+        if isinstance(obj, dict):
+            # An options dict may nest {"english": {...}, "hindi": {...}}.
+            if "english" in obj and isinstance(obj["english"], dict):
+                obj = obj["english"]
+            lines = []
+            for k, val in obj.items():
+                txt = str(val).strip()
+                if txt and not _DEVANAGARI_RE.search(txt[:20]):
+                    lines.append(f"{str(k).upper()}) {txt}"
+                                 if len(str(k)) <= 2 else txt)
+            return "\n".join(lines)
+        if isinstance(obj, list):
+            return "\n".join(str(x).strip() for x in obj if str(x).strip())
+    return s
 
 
 def _row_to_text(row: dict, ext: Extract) -> str:
     parts = []
     for col in ext.text_columns:
-        v = row.get(col)
-        if v is None:
-            continue
-        s = str(v).strip()
-        if s:
-            parts.append(s)
+        rendered = _render_value(col, row.get(col))
+        if rendered:
+            parts.append(rendered)
     return "\n\n".join(parts)
 
 
@@ -168,7 +218,7 @@ def extract_table(
     where = " AND ".join(f"({c})" for c in ext.filters) if ext.filters else "1=1"
     sql = f"SELECT {', '.join(cols)} FROM {ext.table} WHERE {where} ORDER BY {ext.id_column}"
 
-    out_dir = RepoPaths.cpt_raw("local_db") / ext.table
+    out_dir = RepoPaths.cpt_raw(ext.source) / ext.table
     out_dir.mkdir(parents=True, exist_ok=True)
 
     chunk_rows = 5_000

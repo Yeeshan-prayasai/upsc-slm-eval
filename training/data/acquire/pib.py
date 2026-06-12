@@ -105,8 +105,10 @@ TARGET_MINISTRIES = {
     "Ministry of Heavy Industries",
     "Ministry of Road Transport & Highways",
     "Ministry of Skill Development and Entrepreneurship",
-    "Ministry of MSME",
-    "PM Speech",
+    # PIB's exact ministry string (not "Ministry of MSME"); the abbreviated
+    # form matched zero releases. "PM Speech" removed — covered by the
+    # Prime Minister's Office entry; as a label it matched nothing.
+    "Ministry of Micro,Small & Medium Enterprises",
 }
 
 MIN_BODY_CHARS = 200

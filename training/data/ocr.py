@@ -182,6 +182,7 @@ def main(argv: list[str] | None = None) -> int:
     n_chars = 0
     n_pages = 0
 
+    n_err = 0
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         futures = {pool.submit(extract_pdf, pdf, args.force): pdf for pdf in pdfs}
         for fut in as_completed(futures):
@@ -190,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
                 r = fut.result()
             except Exception as e:
                 print(f"  ERROR {pdf.name}: {type(e).__name__}: {e}", file=sys.stderr)
+                n_err += 1
                 continue
             n_done += 1
             n_chars += r.out_chars
@@ -201,7 +203,17 @@ def main(argv: list[str] | None = None) -> int:
                   f"pages={r.n_pages:3d}  chars={r.out_chars:>8,}")
 
     print(f"\nTotal: {n_done} PDFs ({n_cached} cached), "
-          f"{n_pages} pages, {n_chars/1e6:.2f} M chars extracted")
+          f"{n_pages} pages, {n_chars/1e6:.2f} M chars extracted; {n_err} errors")
+    # Abort the build on TOTAL failure (returned 0 silently before, so a
+    # broken extractor/env produced an empty corpus that trained fine).
+    # A partial failure (some PDFs bad) is a loud warning, not an abort —
+    # one corrupt file shouldn't waste a multi-hour rebuild.
+    if n_done == 0:
+        print("OCR extracted ZERO documents — aborting.", file=sys.stderr)
+        return 1
+    if n_err:
+        print(f"WARNING: {n_err}/{len(pdfs)} PDFs failed extraction "
+              f"(continuing with {n_done}).", file=sys.stderr)
     return 0
 
 

@@ -25,6 +25,7 @@ from ..eval import preflight
 from ..eval.pulse import PulseConfig, PulseEvalCallback
 from ..trainers.base import LoRAConfig, OptimConfig, RuntimeConfig
 from ..trainers.cpt import CPTConfig, build_cpt_trainer, maybe_resume
+from ._guards import clear_stale_hard_stop, hard_stopped_this_run, schedule_resume_guard
 
 
 def _load_yaml(path: Path) -> dict:
@@ -122,39 +123,31 @@ def main(argv: list[str] | None = None) -> int:
         cfg, extra_callbacks=[pulse_cb],
     )
 
-    # WSD-resume guard: LambdaLR only persists the step counter; the
-    # curve is rebuilt from config at resume. Resuming with a different
-    # max_steps/fracs silently reshapes the schedule around the restored
-    # step (e.g. a mid-stable checkpoint lands deep into decay).
-    import json as _json
-    wsd_marker = cfg.output_dir / "wsd_config.json"
-    resolved_wsd = {
+    resume_from = maybe_resume(cfg)
+    # Clear a stale HARD_STOP BEFORE deciding to resume: a resume into a
+    # stale marker would otherwise burn the whole remaining budget then
+    # discard the adapter.
+    launch_ts = clear_stale_hard_stop(cfg.output_dir)
+
+    # WSD-resume guard: LambdaLR only persists the step counter; the curve
+    # is rebuilt from config at resume, so a changed schedule silently
+    # reshapes it around the restored step.
+    if not schedule_resume_guard(cfg.output_dir, {
         "max_steps": int(trainer.args.max_steps),
         "warmup_frac": cfg.wsd_warmup_frac,
         "stable_frac": cfg.wsd_stable_frac,
         "min_lr_ratio": cfg.wsd_min_lr_ratio,
-    }
-    if wsd_marker.exists():
-        prev = _json.loads(wsd_marker.read_text(encoding="utf-8"))
-        if prev != resolved_wsd:
-            print(f"\nWSD CONFIG MISMATCH on resume:\n  run started with {prev}\n"
-                  f"  now resolved to  {resolved_wsd}\n"
-                  f"Resuming would silently reshape the LR schedule. Pass the "
-                  f"original values or start a fresh output_dir.", file=sys.stderr)
-            return 2
-    else:
-        wsd_marker.write_text(_json.dumps(resolved_wsd, indent=2), encoding="utf-8")
+    }, kind="wsd"):
+        return 2
 
-    resume_from = maybe_resume(cfg)
     trainer.train(resume_from_checkpoint=resume_from)
 
     # A pulse hard-stop checkpoints + stops the trainer; it must NOT
     # look like a successful run (downstream SFT/ablation would train
     # on the regressed adapter).
-    hard_stop_marker = cfg.output_dir / "HARD_STOP"
-    if hard_stop_marker.exists():
-        print(f"\nHARD-STOP: {hard_stop_marker.read_text().strip()} — "
-              f"final adapter NOT saved.", file=sys.stderr)
+    reason = hard_stopped_this_run(cfg.output_dir, launch_ts)
+    if reason:
+        print(f"\nHARD-STOP: {reason} — final adapter NOT saved.", file=sys.stderr)
         return 3
 
     final_dir = cfg.output_dir / "final"

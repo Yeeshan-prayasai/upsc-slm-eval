@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-LOCAL_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "prayas_local.sqlite"
+LOCAL_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "db_snapshot.sqlite"
 META_TABLE = "_snapshot_meta"
 
 

@@ -87,12 +87,17 @@ def generate(chunks, limit: int | None, rate_s: float = 1.0) -> int:
     client = genai.Client()    # reads GEMINI_API_KEY from env
     todo = chunks[:limit] if limit else chunks
     n_done = 0
+    consecutive_fail = 0
     for f, idx, chunk in todo:
         rel = f.relative_to(CPT_CLEAN_DEDUP)
         out_path = OUT_ROOT / rel.parent / f"{rel.stem}__rc{idx:03d}.md"
         if out_path.exists():
             continue   # resume-safe
-        # Transient-error retry (503s are routine on flash-tier endpoints).
+        # Retry transient errors (503/429/timeout) with backoff; abort the
+        # whole run on terminal auth/quota errors (400/401/403) and after a
+        # run of consecutive total failures — otherwise a bad key burns
+        # ~124s/chunk × thousands of chunks producing nothing.
+        from google.genai import errors as genai_errors
         qa = ""
         for attempt in range(5):
             try:
@@ -101,14 +106,30 @@ def generate(chunks, limit: int | None, rate_s: float = 1.0) -> int:
                     contents=PROMPT_TEMPLATE.format(passage=chunk),
                 )
                 qa = (resp.text or "").strip()
+                consecutive_fail = 0
                 break
-            except Exception as e:
-                wait = 2 ** (attempt + 2)   # 4..64s
-                print(f"  retry {attempt+1}/5 after {type(e).__name__} "
+            except genai_errors.ClientError as e:
+                code = getattr(e, "code", None)
+                if code in (400, 401, 403):
+                    raise SystemExit(
+                        f"Terminal API error {code} ({e}) — aborting "
+                        f"(check GEMINI_API_KEY / quota / model name).")
+                wait = 2 ** (attempt + 2)
+                print(f"  retry {attempt+1}/5 after {type(e).__name__} {code} "
                       f"(sleep {wait}s)")
                 time.sleep(wait)
+            except (genai_errors.ServerError, ConnectionError, TimeoutError) as e:
+                wait = 2 ** (attempt + 2)   # 4..64s
+                print(f"  retry {attempt+1}/5 after {type(e).__name__} (sleep {wait}s)")
+                time.sleep(wait)
         else:
-            print(f"  giving up on {out_path.name} after 5 attempts")
+            consecutive_fail += 1
+            print(f"  giving up on {out_path.name} after 5 attempts "
+                  f"(consecutive failures: {consecutive_fail})")
+            if consecutive_fail >= 3:
+                raise SystemExit(
+                    "3 consecutive chunks failed all retries — aborting "
+                    "(likely a systemic API outage or quota exhaustion).")
             continue
         if not qa.startswith("Q:"):
             print(f"  skip {out_path.name} — unexpected output shape")

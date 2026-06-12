@@ -13,7 +13,9 @@
         preflight-v2 ablation-gemma ablation-qwen \
         test clean
 
-RUN_ID ?= $(shell date +%Y%m%d)
+# Timestamped: two same-day runs (e.g. two ablation adapters) must
+# never share shard identity — resume is keyed on (run_id, condition).
+RUN_ID ?= $(shell date +%Y%m%d-%H%M%S)
 PYTHON ?= .venv/bin/python
 
 verify-env:

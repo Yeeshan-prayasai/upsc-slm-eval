@@ -113,3 +113,4 @@ data/sft_v2/
 # Uploaded reference-book PDFs stay out of git entirely
 *.pdf
 UPSC_Source_List.docx
+v2-audit-round2.json

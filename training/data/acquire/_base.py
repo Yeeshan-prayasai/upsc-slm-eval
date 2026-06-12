@@ -43,6 +43,15 @@ USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
               "Chrome/126.0.0.0 Safari/537.36")
 
 
+class TerminalHTTPError(requests.HTTPError):
+    """A 4xx response — terminal, not retried. Subclasses HTTPError so
+    callers' `except requests.HTTPError` (and 404-skip logic) still catch it."""
+
+
+class HTTPRetryable(requests.HTTPError):
+    """A 5xx response — retried by tenacity."""
+
+
 class RepoPaths:
     """Resolve the SLM repo root + standard output dirs."""
 
@@ -50,6 +59,12 @@ class RepoPaths:
     def root() -> Path:
         # training/data/acquire/_base.py → repo root is 3 levels up.
         return Path(__file__).resolve().parents[3]
+
+    @classmethod
+    def db_snapshot(cls) -> Path:
+        """The local read-only DB snapshot. Centralized so the path
+        literal lives in exactly one place (and carries no org identifier)."""
+        return cls.root() / "data" / "db_snapshot.sqlite"
 
     @classmethod
     def cpt_raw(cls, source: str) -> Path:
@@ -205,11 +220,14 @@ class HttpClient:
     # All transient network failures we want to retry on. `ChunkedEncodingError`
     # covers mid-download connection drops (servers closing the chunked-transfer
     # stream early — common on darpg.gov.in for the larger ARC reports).
+    # NOTE: 4xx is NOT here — those are terminal (missing page, forbidden)
+    # and raised as TerminalHTTPError so tenacity does not waste 5 attempts
+    # (~30s) per dead PRID/URL across tens of thousands of probes.
     _RETRYABLE = (
         requests.ConnectionError,
         requests.Timeout,
-        requests.HTTPError,
         requests.exceptions.ChunkedEncodingError,
+        HTTPRetryable,
     )
 
     @retry(
@@ -224,11 +242,11 @@ class HttpClient:
         host = urlparse(url).netloc
         self.rate.wait(host)
         r = self.session.get(url, timeout=self.timeout, **kw)
-        # Treat 4xx as terminal (don't retry); 5xx triggers retry via raise_for_status
         if 500 <= r.status_code < 600:
-            r.raise_for_status()
+            raise HTTPRetryable(f"{r.status_code} server error: {url}", response=r)
         if r.status_code >= 400:
-            r.raise_for_status()  # non-retryable, surfaces the HTTPError
+            # Terminal — do NOT retry (missing/forbidden page).
+            raise TerminalHTTPError(f"{r.status_code} client error: {url}", response=r)
         return r
 
     @retry(

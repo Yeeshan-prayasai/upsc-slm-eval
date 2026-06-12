@@ -1,6 +1,6 @@
 """Stage 1.3 — build the multi-task FT corpus, excluding every eval-set ID.
 
-Reads from the local SQLite snapshot at data/prayas_local.sqlite. Does NOT touch
+Reads from the local SQLite snapshot at data/db_snapshot.sqlite. Does NOT touch
 any remote DB. CI-asserts eval ∩ ft = ∅. Hard stop on violation.
 
 Output (Parquet) — one row per training pair:
@@ -27,7 +27,7 @@ from local_db import read_table
 
 # Path A2: unified FT instruction format — same string used at train AND inference time,
 # so the model sees the same prompt distribution it was trained on.
-# These will be overridden with prayas's production prompts when those are provided.
+# These will be overridden with the production prompts when those are provided.
 TASK_INSTRUCTIONS = {
     "A": (
         '[TASK=A] You are taking the UPSC Prelims (Indian Civil Services examination). '
@@ -204,7 +204,7 @@ def build_A(exclude: set[str]) -> list[dict]:
         opts_map = {o["id"].upper(): o["text"] for o in r["options"] if isinstance(o, dict)}
         out.append(dict(
             pair_id=pid, task="A", language="en",
-            source_db="prod-prayas-db", source_table="mcqs",
+            source_db="prod-db", source_table="mcqs",
             instruction=TASK_INSTRUCTIONS["A"],
             input=json.dumps({"question": r["questionText"], "options": opts_map,
                               "paper": r["paper"].upper()}, ensure_ascii=False),
@@ -280,7 +280,7 @@ def build_E(exclude: set[str]) -> list[dict]:
             continue
         out.append(dict(
             pair_id=pid, task="E", language="en",
-            source_db="prod-prayas-db", source_table="news_articles",
+            source_db="prod-db", source_table="news_articles",
             instruction=TASK_INSTRUCTIONS["E"],
             input=json.dumps({
                 "date": str(r["date"]), "title": r["title"], "article": r["text"],

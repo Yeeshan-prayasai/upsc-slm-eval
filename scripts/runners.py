@@ -18,6 +18,22 @@ from typing import Protocol
 import pandas as pd
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+
+def _gemini_retryable() -> tuple:
+    """Retryable exception types for the Gemini runner. google-genai's
+    ServerError (5xx/503) is the real transient failure; resolved lazily
+    so importing this module doesn't require google-genai installed."""
+    types: tuple = (TimeoutError, ConnectionError)
+    try:
+        from google.genai import errors as _ge
+        types = (_ge.ServerError, *types)
+    except ImportError:
+        pass
+    return types
+
+
+_GEMINI_RETRYABLE = _gemini_retryable()
+
 LETTER_RE = re.compile(r"\b[ABCD]\b")
 # Confidence parsing — see _parse_confidence below for why we explicitly
 # search the LAST 1-3 digit run in the model's response.
@@ -96,7 +112,7 @@ TASK_INSTRUCTIONS = {
 
 
 def _load_production_prompt(name: str) -> str:
-    """Load a prayas production prompt from configs/prompts/ at first call.
+    """Load a production prompt from configs/prompts/ at first call.
 
     Cached after first load. The on-disk markdown files include explanatory
     front-matter (provenance, usage notes) which we strip — only the prompt
@@ -119,7 +135,7 @@ def _load_production_prompt(name: str) -> str:
 
 
 def get_production_prompt(task: str) -> str:
-    """Resolve Task F / Task G to its prayas-canonical production prompt."""
+    """Resolve Task F / Task G to its canonical production prompt."""
     return {
         "F": _load_production_prompt("prelims_explanation"),
         "G": _load_production_prompt("mains_model_answer"),
@@ -205,13 +221,13 @@ def _input_for(item: EvalItem, inference_task: str | None = None) -> dict:
         }
     if task == "G":
         # Task G (Mains Model-Answer Generation, production prompt): same eval
-        # items as Task B, but the prayas DSL prompt expects a different
+        # items as Task B, but the production DSL prompt expects a different
         # input shape (no `max_score`, no `paper`/`subject` JSON; the DSL
         # itself handles all of that internally from the question text).
         return {
             "question": g["question"],
             "word_count": int(g.get("word_count") or 250),
-            "additional_context": "",   # prayas pipeline injects this from
+            "additional_context": "",   # the production pipeline injects this from
                                         # a separate search step (see
                                         # configs/prompts/current_affairs_queries.md);
                                         # we leave empty for the capability test.
@@ -223,7 +239,7 @@ def build_prompt(item: EvalItem, inference_task: str | None = None) -> str:
     """Build the prompt for `inference_task` against `item`.
 
     A/B/C/E use Path-A2 FT-corpus instructions (TASK_INSTRUCTIONS).
-    F/G use prayas's production prompts loaded from configs/prompts/.
+    F/G use the production prompts loaded from configs/prompts/.
     """
     task = inference_task or item.task
     if task in TASK_INSTRUCTIONS:
@@ -232,7 +248,15 @@ def build_prompt(item: EvalItem, inference_task: str | None = None) -> str:
         instruction = get_production_prompt(task)
     else:
         raise ValueError(f"no prompt available for task: {task}")
-    return f"{instruction}\n\n{json.dumps(_input_for(item, task), ensure_ascii=False)}"
+    payload = _input_for(item, task)
+    prompt = f"{instruction}\n\n{json.dumps(payload, ensure_ascii=False)}"
+    # Train/infer parity: the v2 SFT corpus appends this exact length hint
+    # to Task-B (and Mains-style G) prompts (build_sft_corpus._build_prompt).
+    # The v2 length-control mechanism is the hint — if inference omits it,
+    # the model is queried in a format it was never trained on for length.
+    if task in ("B", "G") and payload.get("word_count"):
+        prompt += f"\n\nAnswer in approximately {int(payload['word_count'])} words."
+    return prompt
 
 
 def build_confidence_prompt(item: EvalItem, letter: str) -> str:
@@ -299,7 +323,7 @@ def _extract_json(text: str) -> dict | None:
 def parse_output(task: str, raw: str) -> dict:
     """Parse the raw model output for `task`.
 
-    A/B/C/E use Path-A2 JSON instructions. Task F uses the prayas production
+    A/B/C/E use Path-A2 JSON instructions. Task F uses the production
     prompt which also emits JSON ({"english", "hindi"}). Task G emits raw
     markdown (per the Mains DSL prompt — no JSON enforced).
     """
@@ -677,7 +701,7 @@ def _gemini_safety_settings():
     """Disable Gemini safety blocks for academic / UPSC eval content.
 
     v1 hit a 65 % empty-output rate on Task F Gemini (521/800 rows) because
-    `gemini-3.5-flash` was silently blocking the prayas production prompts —
+    `gemini-3.5-flash` was silently blocking the production prompts —
     chunks streamed back with `chunk.text=None` and consumed output tokens
     without emitting visible content. UPSC syllabus material (Article 21,
     treaty articles, current-affairs commentary on policy) frequently
@@ -715,17 +739,22 @@ class GeminiRunner:
         # rebuild ~5K times per condition run).
         self._safety = _gemini_safety_settings()
         # Exemplar prefix per inference-task. F/G are kept empty by design:
-        # they are capability tests of the prayas production prompts themselves,
+        # they are capability tests of the production prompts themselves,
         # not generalization tests. Adding FT-corpus exemplars (which use the
         # different Path-A2 prompts) would contaminate the prompt.
         self.exemplar_block: dict[str, str] = {
             "A": "", "B": "", "C": "", "E": "", "F": "", "G": "",
         }
 
+    # google-genai raises its own error types (genai.errors.ServerError for
+    # 5xx/503, ClientError for 4xx) — NOT builtin TimeoutError/ConnectionError,
+    # so the previous predicate never matched a real API failure and retry
+    # was dead. Retry on ServerError + the builtins; let ClientError (auth/
+    # quota) surface immediately.
     @retry(
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=1, max=16),
-        retry=retry_if_exception_type((TimeoutError, ConnectionError)),
+        retry=retry_if_exception_type(_GEMINI_RETRYABLE),
         reraise=True,
     )
     def _generate(
@@ -858,12 +887,12 @@ def estimate_gemini_cost(eval_set_path: Path, few_shot: bool) -> float:
 
     Accounts for the inference-task fan-out via EVAL_TASK_TO_INFERENCE_TASKS:
     each Task-A eval row drives one A and one F call; each Task-B drives one
-    B and one G call. F + G use the prayas production prompts which are
+    B and one G call. F + G use the production prompts which are
     substantially longer than the FT-corpus instructions.
     """
     df = pd.read_parquet(eval_set_path)
     # Rough upper bounds (input includes the instruction text).
-    # F input ~ 2600 tokens (large prayas prompt + question + options + gold).
+    # F input ~ 2600 tokens (large production prompt + question + options + gold).
     # G input ~ 3500 tokens (giant Mains DSL prompt + question).
     in_per_task = {"A": 250, "B": 200, "C": 700, "E": 1800,
                    "F": 2600, "G": 3500}

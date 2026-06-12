@@ -218,6 +218,18 @@ def build_cpt_trainer(
 
     print(f"[cpt] corpus: {cfg.corpus_parquet}")
     train_ds = load_packed_corpus(cfg.corpus_parquet)
+    # The parquet is packed to a fixed length by tokenize_pack --seq-len;
+    # if runtime.max_seq_length disagrees (e.g. someone selects the
+    # seq-2048 OOM-fallback runtime without re-tokenizing) the packed
+    # collator would feed 4096-token rows under a 2048 assumption. Assert.
+    row_len = len(train_ds[0]["input_ids"])
+    if row_len != cfg.runtime.max_seq_length:
+        raise RuntimeError(
+            f"Packed parquet row length {row_len} != runtime.max_seq_length "
+            f"{cfg.runtime.max_seq_length}. Re-tokenize with "
+            f"`tokenize_pack --seq-len {cfg.runtime.max_seq_length}` or use "
+            f"the matching runtime config."
+        )
     max_steps = resolve_max_steps(cfg, len(train_ds))
     print(f"[cpt] sequences: {len(train_ds):,}  "
           f"(seq_len={cfg.runtime.max_seq_length}, effective batch="

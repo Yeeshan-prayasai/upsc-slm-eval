@@ -23,10 +23,43 @@ from pathlib import Path
 
 import yaml
 
+import json
+
 from ..eval import preflight
 from ..eval.pulse import PulseConfig, PulseEvalCallback
 from ..trainers.base import LoRAConfig, OptimConfig, RuntimeConfig
 from ..trainers.sft import SFTConfigV2, build_sft_trainer, maybe_resume
+from ._guards import clear_stale_hard_stop, hard_stopped_this_run, schedule_resume_guard
+
+
+def _sft_jsonl_clean(path: Path) -> bool:
+    """50-gram + per-field hash leakage check over an SFT jsonl's
+    prompt+completion text against the locked eval set + holdout."""
+    from ..data.leakage import (EVAL_SET, build_eval_index, check_corpus_text)
+    holdout = path.parent.parent / "eval_set_holdout.parquet"
+    idx_paths = [EVAL_SET] + ([holdout] if holdout.exists() else [])
+    eval_ids, hash_to_qid, gram_to_qids, gram_lengths = build_eval_index(idx_paths)
+
+    def _rows():
+        with open(path, encoding="utf-8") as fp:
+            for line in fp:
+                line = line.strip()
+                if not line:
+                    continue
+                d = json.loads(line)
+                def _c(turns):
+                    if isinstance(turns, list) and turns:
+                        return str(turns[0].get("content", ""))
+                    return str(turns or "")
+                yield str(d.get("pair_id", "")), f"{_c(d.get('prompt'))} {_c(d.get('completion'))}"
+
+    rep = check_corpus_text(_rows(), eval_ids, hash_to_qid, gram_to_qids,
+                            gram_lengths=gram_lengths)
+    if rep.is_clean():
+        print(f"[sft-gate] CLEAN: {path.name}")
+        return True
+    print(f"[sft-gate] LEAKAGE in {path.name}:\n{rep.render()}", file=sys.stderr)
+    return False
 
 
 def _load_yaml(path: Path) -> dict:
@@ -107,17 +140,12 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = _build_cfg(args)
 
-    # Pre-flight gate — SFT also reads from data/ft_corpus.parquet (v1
-    # locked) but the eval-set + manifest check is still cheap and catches
-    # accidental contamination introduced after corpus build.
+    # Leakage gate over the ACTUAL SFT training data (the gate exists to
+    # protect THIS data — the prior preflight only re-scanned the CPT
+    # corpus and never looked at train.jsonl/valid.jsonl).
     if not args.skip_preflight:
-        # SFT doesn't read the tokenized CPT corpus directly, so we skip
-        # the tokenized-existence check (--no-tokenized).
-        rep = preflight.run_preflight(["gemma", "qwen"], skip_ngram=True,
-                                       require_tokenized=False)
-        print(preflight.render(rep))
-        if not rep.is_clean():
-            print("\nPRE-FLIGHT FAILED — aborting SFT.", file=sys.stderr)
+        if not _sft_jsonl_clean(cfg.train_jsonl) or not _sft_jsonl_clean(cfg.valid_jsonl):
+            print("\nSFT LEAKAGE GATE FAILED — aborting SFT.", file=sys.stderr)
             return 2
 
     model_family = "qwen" if "qwen" in cfg.base_model.lower() else "gemma"
@@ -130,12 +158,19 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     resume_from = maybe_resume(cfg)
+    launch_ts = clear_stale_hard_stop(cfg.output_dir)
+    if not schedule_resume_guard(cfg.output_dir, {
+        "max_steps": int(trainer.args.max_steps),
+        "warmup_ratio": cfg.warmup_ratio,
+        "min_lr_rate": cfg.min_lr_rate,
+    }, kind="sft"):
+        return 2
+
     trainer.train(resume_from_checkpoint=resume_from)
 
-    hard_stop_marker = cfg.output_dir / "HARD_STOP"
-    if hard_stop_marker.exists():
-        print(f"\nHARD-STOP: {hard_stop_marker.read_text().strip()} — "
-              f"final adapter NOT saved.", file=sys.stderr)
+    reason = hard_stopped_this_run(cfg.output_dir, launch_ts)
+    if reason:
+        print(f"\nHARD-STOP: {reason} — final adapter NOT saved.", file=sys.stderr)
         return 3
 
     final_dir = cfg.output_dir / "final"

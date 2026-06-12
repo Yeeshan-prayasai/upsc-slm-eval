@@ -9,11 +9,14 @@ Refuses to begin training if:
 3. Either of the two tokenized Parquet outputs is missing or empty.
 
 The leakage check at this stage is REDUNDANT with the corpus-build
-gate in `build_cpt_corpus.py` — but redundancy is the point. The
-corpus-build gate runs against `data/cpt_clean_dedup/`; this gate runs
-against the tokenized Parquet that the trainer actually reads, so a
-packaging error (wrong tokenization, accidental re-introduction of
-eval rows during the .arrow build) would still get caught here.
+gate in `build_cpt_corpus.py` — but redundancy is the point: it re-runs
+the same `data/cpt_clean_dedup/` text scan at trainer start, catching a
+corpus edited between build and launch. NOTE: it does NOT decode the
+tokenized Parquet — the Parquet only gets an existence/non-empty check
+(#3). The text→tokens step is deterministic, so a clean cpt_clean_dedup
+scan plus a present Parquet is the gate; a hand-edited Parquet is out of
+scope (and `--corpus` non-standard paths are refused unless
+`--skip-preflight`).
 
 This module is invoked automatically at the start of `run_cpt.py`
 and `run_sft.py`. It can also be called as a standalone CLI for
@@ -117,13 +120,16 @@ def run_preflight(
         rep.fatal_errors.append(f"eval_set.parquet not found at {EVAL_SET}")
         return rep
 
-    # 1. Build eval indices
+    # 1. Build eval indices (locked eval set + pulse holdout, if present)
     print(f"[preflight] loading eval set: {EVAL_SET}")
-    eval_ids, hash_to_qid, gram_to_qids = leakage_mod.build_eval_index(EVAL_SET)
+    _holdout = REPO / "data" / "eval_set_holdout.parquet"
+    _idx_paths = [EVAL_SET] + ([_holdout] if _holdout.exists() else [])
+    eval_ids, hash_to_qid, gram_to_qids, gram_lengths = \
+        leakage_mod.build_eval_index(_idx_paths)
     rep.eval_set_rows = len(eval_ids)
     print(f"  {len(eval_ids)} eval rows, "
           f"{len(hash_to_qid)} text-hashes, "
-          f"{len(gram_to_qids):,} distinct 50-grams")
+          f"{len(gram_to_qids):,} distinct grams (lengths {sorted(gram_lengths)})")
 
     # 2. ID-level intersection across local_db row indices
     cpt_raw_root = REPO / "data" / "cpt_raw"
@@ -151,19 +157,21 @@ def run_preflight(
     # 4. 50-gram contiguous overlap on the deduplicated CPT corpus.
     # This is the *content-level* check, complementing the ID check.
     if not skip_ngram and CPT_CLEAN_DEDUP.exists():
-        print(f"[preflight] 50-gram leakage scan vs {CPT_CLEAN_DEDUP}")
-        paragraphs = (
-            list(leakage_mod.iter_text_files([CPT_CLEAN_DEDUP]))
-            + list(leakage_mod.iter_jsonl_text([CPT_CLEAN_DEDUP]))
+        print(f"[preflight] leakage scan vs {CPT_CLEAN_DEDUP}")
+        import itertools
+        # Stream the iterables directly — materializing every paragraph
+        # of a 300M-token corpus into a list held GBs at once.
+        paragraphs = itertools.chain(
+            leakage_mod.iter_text_files([CPT_CLEAN_DEDUP]),
+            leakage_mod.iter_jsonl_text([CPT_CLEAN_DEDUP]),
         )
-        rep.cpt_corpus_paragraphs = len(paragraphs)
-        print(f"  {len(paragraphs):,} paragraphs to scan")
         rep.leakage_report = leakage_mod.check_corpus_text(
             paragraphs=paragraphs,
             eval_ids=eval_ids,
             hash_to_qid=hash_to_qid,
             gram_to_qids=gram_to_qids,
             item_ids=None,
+            gram_lengths=gram_lengths,
         )
     elif skip_ngram:
         print(f"[preflight] --no-ngram: skipping 50-gram scan")

@@ -4,7 +4,11 @@ Trains and evaluates each cell sequentially on a single GPU:
 
   cell 1: v1 baseline                            (no run; reuses existing v1 results)
   cell 2: SFT-only                              (skip CPT)
-  cell 3: CPT-only           (no SFT — merge CPT adapter, eval directly)
+  cell 3: CPT-only           (no SFT — eval the bare CPT adapter directly;
+                              isolates pure knowledge injection. Methodology
+                              §8 is reconciled to this — the original "v1
+                              adapter merged after CPT" wording confounds CPT
+                              with v1's SFT and is dropped.)
   cell 4: CPT → SFT full     (HEADLINE run)
   cell 5: CPT → SFT, vanilla LoRA (no RSLoRA)   (isolates RSLoRA contribution)
   cell 6: CPT-50%-ckpt → SFT                    (measures CPT diminishing returns)
@@ -12,13 +16,21 @@ Trains and evaluates each cell sequentially on a single GPU:
 For each non-baseline cell, the driver:
   1. Sets up cell-specific config overrides on top of the per-model YAMLs
   2. Runs CPT (if cell needs it) → SFT (if cell needs it)
-  3. Re-runs the v1 inference pipeline against the final adapter
-     (via `scripts/run_inference.py` — unchanged, reused as-is)
-  4. Scores via `scripts/score_tier1.py` → aggregate → hypothesis_tests
-  5. Writes per-cell results to `runs/ablation/<cell>/`
+  3. Records the cell's final adapter path in `runs/ablation/<cell>/done.txt`
+
+**This driver TRAINS ONLY.** Inference + scoring are a SEPARATE step:
+after the grid finishes, merge each cell's adapter and run the v1 eval
+pipeline against it via the Make targets:
+    make infer-v2-gemma ADAPTER=<cell>/sft/final-merged RUN_ID=cell4
+    make score-v2
+(Earlier docstrings claimed steps 3-5 ran here; they never did — this
+is the honest contract. Wiring per-cell eval into the driver is tracked
+but deliberately out of this script so a training failure in one cell
+doesn't entangle the eval pipeline.)
 
 The driver is RESUMABLE — if a cell's `runs/ablation/<cell>/done.txt`
-exists, it skips. To force re-run, delete that marker.
+exists, it skips. To force re-run, delete that marker. It exits
+NON-ZERO if any cell errored.
 
 Usage:
   python -m training.orchestration.run_ablation --model gemma
@@ -308,6 +320,10 @@ def main(argv: list[str] | None = None) -> int:
     summary_path = ABLATION_ROOT / f"summary__{args.model}.json"
     summary_path.write_text(json.dumps(all_summaries, indent=2), encoding="utf-8")
     print(f"\n{'=' * 70}\nGrid summary → {summary_path.relative_to(REPO)}\n{'=' * 70}")
+    n_failed = sum(1 for s in all_summaries if "error" in s)
+    if n_failed:
+        print(f"✗ {n_failed} cell(s) FAILED — see summary.", file=sys.stderr)
+        return 1
     return 0
 
 

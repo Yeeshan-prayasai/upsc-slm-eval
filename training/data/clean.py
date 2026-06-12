@@ -300,8 +300,12 @@ def clean_jsonl_file(src: Path, dst: Path) -> CleanResult:
 
     rows_in = rows_kept = 0
     in_chars = out_chars = 0
-    kept_lines: list[str] = []
-    with src.open(encoding="utf-8") as fp:
+    # Stream row-by-row to a temp file rather than buffering every kept
+    # row in memory — the slimpajama replay sample is ~2.4 GB and would
+    # otherwise hold ~2× that resident on the memory-constrained M5.
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    with src.open(encoding="utf-8") as fp, tmp.open("w", encoding="utf-8") as out_fp:
         for line in fp:
             line = line.strip()
             if not line:
@@ -320,16 +324,16 @@ def clean_jsonl_file(src: Path, dst: Path) -> CleanResult:
                 continue
             rows_kept += 1
             out_chars += len(t)
-            kept_lines.append(_json.dumps({"text": t}, ensure_ascii=False))
+            out_fp.write(_json.dumps({"text": t}, ensure_ascii=False) + "\n")
 
-    if not kept_lines:
+    if rows_kept == 0:
+        tmp.unlink(missing_ok=True)
         return CleanResult(
             src_path=str(src.relative_to(REPO)), dst_path=None,
             in_chars=in_chars, out_chars=0,
             dropped=True, drop_reason=f"no rows survived ({rows_in} in)",
         )
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text("\n".join(kept_lines) + "\n", encoding="utf-8")
+    tmp.replace(dst)
     return CleanResult(
         src_path=str(src.relative_to(REPO)),
         dst_path=str(dst.relative_to(REPO)),
@@ -383,7 +387,11 @@ def clean_file(src: Path, dst: Path) -> CleanResult:
         # EN and HI variants share lines in these blobs, so strip
         # Devanagari RUNS (plus the danda/space padding around them)
         # character-wise instead of dropping lines.
-        text = re.sub(r"[\u0900-\u097F][\u0900-\u097F\s\u0964\u0965]*", " ", text)
+        # Continuation class excludes \n: a Devanagari run must not eat the
+        # blank line / paragraph break that follows it, or the END-RECORD
+        # delimiter glues onto the preceding content paragraph and the
+        # dedup structural protection (para == delimiter) is bypassed.
+        text = re.sub(r"[\u0900-\u097F][\u0900-\u097F \t\u0964\u0965]*", " ", text)
         text = re.sub(r"[ \t]{2,}", " ", text)
         word_count = len(text.split())
         reason = (f"words={word_count} below floor ({MIN_WORDS_PER_DOC})"
@@ -478,14 +486,37 @@ def dedupe_corpus(
             continue
 
         text = f.read_text(encoding="utf-8", errors="replace")
+
+        if END_RECORD_DELIM in text:
+            # Record-delimited DB extract: dedup at WHOLE-RECORD
+            # granularity, not per-paragraph. Per-paragraph exact dedup
+            # would strip a shared question stem / boilerplate line
+            # ("Consider the following statements:", "Answer: (b)") from
+            # every record after the first, mutilating the QA records.
+            records = [r.strip() for r in text.split(END_RECORD_DELIM) if r.strip()]
+            rep.paragraphs_in += len(records)
+            kept_recs: list[str] = []
+            for rec in records:
+                h = hashlib.sha256(re.sub(r"\s+", " ", rec).lower().encode()).hexdigest()
+                if h in seen_hashes:
+                    rep.exact_dups_removed += 1
+                    continue
+                seen_hashes.add(h)
+                kept_recs.append(rec)
+            if not kept_recs:
+                continue
+            rep.paragraphs_out += len(kept_recs)
+            body = ("\n\n" + END_RECORD_DELIM + "\n\n").join(kept_recs) \
+                + "\n\n" + END_RECORD_DELIM + "\n"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(body, encoding="utf-8")
+            continue
+
         paragraphs = _paragraphs(text)
         rep.paragraphs_in += len(paragraphs)
 
         kept: list[str] = []
         for para in paragraphs:
-            if para == END_RECORD_DELIM:
-                kept.append(para)   # structural, never deduped
-                continue
             h = hashlib.sha256(re.sub(r"\s+", " ", para).lower().encode()).hexdigest()
             if h in seen_hashes:
                 rep.exact_dups_removed += 1
@@ -574,11 +605,19 @@ def main(argv: list[str] | None = None) -> int:
     # and never went through OCR (since they're already text). Pull them
     # into the same cleaning pass so they don't silently bypass the
     # document floor + language + Mrunal cruft filters.
+    #
+    # The exclusion is PER-FILE, not per-dir: a source can hold BOTH
+    # OCR'd PDFs (in cpt_text/<src>/) AND scraped text (in cpt_raw/<src>/) —
+    # pmf_ias is exactly this (1 OCR'd PDF + 1,000 scrape .md). A dir-level
+    # skip dropped all 1,000 scrape files because the dir had a cpt_text
+    # counterpart. Skip only files whose relative path already came from
+    # cpt_text for that source.
     if str(src_root).startswith(str(CPT_TEXT)) and not args.source:
+        covered = {p.relative_to(CPT_TEXT) for p in txts
+                   if p.is_relative_to(CPT_TEXT)}
         for src_dir in sorted(p for p in CPT_RAW.iterdir() if p.is_dir()):
-            if (CPT_TEXT / src_dir.name).exists():
-                continue  # PDF-extracted source — already covered above
-            extra = _gather(src_dir)
+            extra = [p for p in _gather(src_dir)
+                     if Path(src_dir.name) / p.relative_to(src_dir) not in covered]
             if extra:
                 txts.extend(extra)
                 print(f"  (+ {len(extra)} text files from cpt_raw/{src_dir.name}/)")
@@ -586,6 +625,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No .txt/.md/.jsonl files under {src_root}", file=sys.stderr)
         return 1
     print(f"Cleaning {len(txts)} files: {src_root} → {dst_root}")
+
+    # Clear stale outputs first — a file dropped by today's run (now below
+    # the word floor, or newly language-filtered) would otherwise persist
+    # from an earlier run and silently re-enter training.
+    import shutil
+    for stale_root in (dst_root, dedup_root):
+        if stale_root.exists():
+            n_stale = sum(1 for _ in stale_root.rglob("*") if _.is_file())
+            shutil.rmtree(stale_root)
+            print(f"  (cleared {n_stale} stale files from {stale_root.name}/)")
 
     cleaned_paths: list[Path] = []
     total_in = total_out = 0

@@ -273,9 +273,26 @@ def tokenize_and_pack(
         raise FileNotFoundError(f"No documents under {corpus_root}")
 
     # ---- Mix expansion: (source, path, rep_idx) work items ----
-    unknown = sorted({s for s, _ in pairs} - set(mix))
+    present_sources = {s for s, _ in pairs}
+    unknown = sorted(present_sources - set(mix))
     if unknown:
         print(f"  WARNING: sources without mix entry (default repeat=1.0): {unknown}")
+    # A mix entry whose source dir produced ZERO files is dead config —
+    # its weight silently never applies (e.g. a 'qa_bank: repeat 3' that
+    # never got a qa_bank/ dir). Fail loud rather than train the wrong mix.
+    # `instruct` and `rc_qa` are optionally-staged (generated after the
+    # main build); their absence is a logged warning, not a hard error.
+    OPTIONAL_SOURCES = {"instruct", "rc_qa"}
+    dead = sorted(set(mix) - present_sources - OPTIONAL_SOURCES)
+    if dead:
+        raise ValueError(
+            f"Mix config weights sources with no files under {corpus_root}: "
+            f"{dead}. Either the source wasn't built or the dir name drifted "
+            f"— the weight would silently no-op."
+        )
+    dead_optional = sorted((set(mix) & OPTIONAL_SOURCES) - present_sources)
+    if dead_optional:
+        print(f"  NOTE: optional mix sources not present (skipped): {dead_optional}")
     work: list[tuple[str, Path, int]] = []
     for source, path in pairs:
         sm = mix.get(source, SourceMix())
@@ -319,22 +336,45 @@ def tokenize_and_pack(
             if len(row_batch) >= write_batch_rows:
                 _flush_batch()
 
+    from array import array
+    # Refcount each cached path so we can evict after its last use —
+    # otherwise every repeated-source doc stays resident for the whole
+    # run (multi-GB on the M5). Cached ids are int32 arrays (~4 B/token,
+    # ~9× smaller than Python int lists).
+    from collections import Counter
+    remaining_uses = Counter(p for _, p, _ in work if p in repeat_paths)
+
     for i, (source, path, rep_idx) in enumerate(work):
         if i % 200 == 0:
             print(f"  [{i:>6}/{len(work)}] {source}/{path.name}  "
                   f"(tokens so far: {stats.tokens_total:,})")
         sm = mix.get(source, SourceMix())
 
+        # Cap early-exit: a cap applies only to rep_idx 0 (unique pass);
+        # once exhausted, skip reading/tokenizing the file entirely
+        # rather than tokenizing every remaining slimpajama/wiki file in
+        # full and then dropping it.
+        if (sm.cap_tokens is not None and rep_idx == 0
+                and capped_unique.get(source, 0) >= sm.cap_tokens):
+            stats.per_source_docs_capped[source] = (
+                stats.per_source_docs_capped.get(source, 0) + 1)
+            continue
+
         if path in tok_cache:
             doc_ids_list = tok_cache[path]
+            remaining_uses[path] -= 1
+            if remaining_uses[path] <= 0:
+                tok_cache.pop(path, None)
         else:
             doc_ids_list = [
-                _encode_doc(tok, doc, bos_id)
+                array("i", ids)
                 for doc in _read_documents(path)
+                if (ids := _encode_doc(tok, doc, bos_id))
             ]
-            doc_ids_list = [ids for ids in doc_ids_list if ids]
             if path in repeat_paths:
-                tok_cache[path] = doc_ids_list
+                remaining_uses[path] -= 1
+                if remaining_uses[path] > 0:
+                    tok_cache[path] = doc_ids_list
 
         for ids in doc_ids_list:
             doc_tokens = len(ids) + 1   # +1 for EOS separator

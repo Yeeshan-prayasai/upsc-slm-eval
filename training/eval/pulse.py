@@ -46,10 +46,15 @@ from transformers import TrainerCallback, TrainerControl, TrainerState, Training
 @dataclass
 class PulseConfig:
     """All cadences + thresholds in one place. Defaults match
-    methodology §7 ("Eval pulse + pre-flight gates")."""
-    task_every_steps: int = 500
-    mmlu_every_steps: int = 1000
-    hindi_every_steps: int = 1000
+    methodology §7 ("Eval pulse + pre-flight gates").
+
+    Cadences may be set to 0 to mean "derive from max_steps" — see
+    PulseEvalCallback, which scales them to ~6 fires per run so a
+    short ~1,400-step CPT isn't gated only once. A final on_train_end
+    pulse always gates the last step regardless of cadence."""
+    task_every_steps: int = 0      # 0 → max_steps//6
+    mmlu_every_steps: int = 0      # 0 → max_steps//6
+    hindi_every_steps: int = 0     # 0 → max_steps//6
 
     # Drop thresholds (in percentage points) for hard-stop
     mmlu_drop_pp_threshold: float = 2.0
@@ -157,19 +162,37 @@ class PulseEvalCallback(TrainerCallback):
                     continue
             if not isinstance(gp, dict):
                 continue
+            # eval_set stores option keys LOWERCASE ('a'..'d') while
+            # mcq_accuracy requires uppercase 'ABCD' — without this
+            # normalization every item scores as unscorable (n=0) and
+            # the −5pp hard-stop silently never arms.
+            opts = gp.get("options")
+            if isinstance(opts, str):
+                try:
+                    opts = json.loads(opts)
+                except json.JSONDecodeError:
+                    opts = None
+            if isinstance(opts, dict):
+                opts = {str(k).upper(): v for k, v in opts.items()}
+            gold = (gp.get("correct_option_letter")
+                    or gp.get("correct_option") or gp.get("gold_letter"))
             items.append({
                 "question": gp.get("question") or gp.get("question_text"),
-                "options": gp.get("options"),
-                "gold_letter": gp.get("correct_option_letter")
-                               or gp.get("correct_option") or gp.get("gold_letter"),
+                "options": opts,
+                "gold_letter": str(gold).upper() if gold else None,
             })
         expected = min(self.cfg.hindi_n, len(hi_a))
-        usable = [i for i in items if i["question"] and i["options"] and i["gold_letter"]]
+        usable = [
+            i for i in items
+            if i["question"] and isinstance(i["options"], dict)
+            and all(k in i["options"] for k in "ABCD")
+            and i["gold_letter"] in "ABCD"
+        ]
         if expected and len(usable) < expected * 0.9:
             raise RuntimeError(
-                f"Hindi probe parsed only {len(usable)}/{expected} rows from "
-                f"gold_payload — schema drift would silently disable the "
-                f"no-regression gate. Inspect eval_set.parquet."
+                f"Hindi probe parsed only {len(usable)}/{expected} scoreable "
+                f"rows from gold_payload — schema drift would silently "
+                f"disable the no-regression gate. Inspect eval_set.parquet."
             )
         return usable
 
@@ -300,12 +323,56 @@ class PulseEvalCallback(TrainerCallback):
 
     # ----- TrainerCallback API -----
 
+    def _baseline_path(self) -> Path:
+        return self.output_dir / "pulse_baselines.json"
+
+    def _load_persisted_baselines(self) -> None:
+        """Baselines are measured ONCE on the pre-CPT model and persisted.
+        Without this, a resumed run re-measures from the partially-trained
+        (possibly already-regressed) weights — the −5pp/−2pp gates would
+        silently re-anchor to the degraded model and never fire."""
+        p = self._baseline_path()
+        if p.exists():
+            d = json.loads(p.read_text(encoding="utf-8"))
+            if self.cfg.mmlu_baseline is None:
+                self.cfg.mmlu_baseline = d.get("mmlu_baseline")
+            if self.cfg.hindi_baseline is None:
+                self.cfg.hindi_baseline = d.get("hindi_baseline")
+            print(f"[pulse] loaded persisted baselines: "
+                  f"mmlu={self.cfg.mmlu_baseline} hindi={self.cfg.hindi_baseline}")
+
+    def _persist_baselines(self) -> None:
+        self._baseline_path().write_text(json.dumps({
+            "mmlu_baseline": self.cfg.mmlu_baseline,
+            "hindi_baseline": self.cfg.hindi_baseline,
+        }), encoding="utf-8")
+
     def on_train_begin(self, args: TrainingArguments, state: TrainerState,
                        control: TrainerControl, model=None, **kw):
         """Measure the MMLU + Hindi baselines at step 0 with the SAME
         prompt format every later pulse uses. Gating against baselines
         measured by a different instrument (the v1 eval pipeline)
-        produces spurious stops or masked regressions."""
+        produces spurious stops or masked regressions. Baselines are
+        persisted and reused across resumes (never re-measured from
+        partially-trained weights)."""
+        # Derive cadences from run length so gates fire ~6× (a fixed 1000
+        # would fire once on a ~1,400-step CPT, never during WSD decay).
+        if state.max_steps:
+            derived = max(1, state.max_steps // 6)
+            for attr in ("task_every_steps", "mmlu_every_steps", "hindi_every_steps"):
+                if getattr(self.cfg, attr) == 0:
+                    setattr(self.cfg, attr, derived)
+            print(f"[pulse] cadence derived from max_steps={state.max_steps}: "
+                  f"every {derived} steps")
+        self._load_persisted_baselines()
+        # A resume (global_step>0) with no persisted baseline cannot
+        # measure a valid pre-training reference — leave the gate inert
+        # and warn rather than anchor to the resumed (trained) weights.
+        if state.global_step > 0 and (self.cfg.mmlu_baseline is None
+                                      or self.cfg.hindi_baseline is None):
+            print("[pulse] WARNING: resumed run with no persisted baselines — "
+                  "regression gates inactive (no valid pre-training reference)")
+            return control
         tokenizer = self._resolve_tokenizer(kw)
         if model is None or tokenizer is None:
             print("[pulse] on_train_begin: model/tokenizer unavailable — "
@@ -332,7 +399,26 @@ class PulseEvalCallback(TrainerCallback):
                     self.cfg.hindi_baseline = acc
                     self._append_log({"step": 0, "pulse": "hindi_baseline",
                                       "task_a_hi_acc": acc, "n": n})
+        self._persist_baselines()
         return control
+
+    def _pulse(self, step, model, tokenizer, control, *, force=False) -> None:
+        if self.cfg.task_every_steps and (force or step % self.cfg.task_every_steps == 0):
+            self._append_log(self._run_task_pulse(step, model, tokenizer))
+        if self.cfg.mmlu_every_steps and (force or step % self.cfg.mmlu_every_steps == 0):
+            rec, hard_stop = self._run_mmlu_pulse(step, model, tokenizer)
+            self._append_log(rec)
+            if hard_stop:
+                self._hard_stop(control, step,
+                                f"MMLU drop > {self.cfg.mmlu_drop_pp_threshold} pp")
+                return
+        if self.cfg.hindi_every_steps and (force or step % self.cfg.hindi_every_steps == 0):
+            rec, hard_stop = self._run_hindi_pulse(step, model, tokenizer)
+            self._append_log(rec)
+            if hard_stop:
+                self._hard_stop(control, step,
+                                f"Hindi accuracy drop > "
+                                f"{self.cfg.hindi_drop_pp_threshold} pp")
 
     def on_step_end(self, args: TrainingArguments, state: TrainerState,
                     control: TrainerControl, model=None, **kw):
@@ -340,29 +426,16 @@ class PulseEvalCallback(TrainerCallback):
         step = state.global_step
         if step <= 0 or self._stopped or model is None or tokenizer is None:
             return control
+        self._pulse(step, model, tokenizer, control)
+        return control
 
-        # Task pulse
-        if step % self.cfg.task_every_steps == 0:
-            rec = self._run_task_pulse(step, model, tokenizer)
-            self._append_log(rec)
-
-        # MMLU pulse
-        if step % self.cfg.mmlu_every_steps == 0:
-            rec, hard_stop = self._run_mmlu_pulse(step, model, tokenizer)
-            self._append_log(rec)
-            if hard_stop:
-                self._hard_stop(control, step,
-                                f"MMLU drop > {self.cfg.mmlu_drop_pp_threshold} pp")
-                return control
-
-        # Hindi no-regression pulse
-        if step % self.cfg.hindi_every_steps == 0:
-            rec, hard_stop = self._run_hindi_pulse(step, model, tokenizer)
-            self._append_log(rec)
-            if hard_stop:
-                self._hard_stop(control, step,
-                                f"Hindi accuracy drop > "
-                                f"{self.cfg.hindi_drop_pp_threshold} pp")
-                return control
-
+    def on_train_end(self, args: TrainingArguments, state: TrainerState,
+                     control: TrainerControl, model=None, **kw):
+        """Always gate the final step — the cadence can land the last
+        gate well before the end (esp. through WSD decay)."""
+        tokenizer = self._resolve_tokenizer(kw)
+        if self._stopped or model is None or tokenizer is None:
+            return control
+        if state.global_step % max(1, self.cfg.mmlu_every_steps or 1) != 0:
+            self._pulse(state.global_step, model, tokenizer, control, force=True)
         return control

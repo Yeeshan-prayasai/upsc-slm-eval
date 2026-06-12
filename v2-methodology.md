@@ -10,7 +10,7 @@
 
 ## 0. TL;DR — the recipe in one paragraph
 
-Two-stage training per base model on **English content only**: **rank-64 LoRA-CPT** on a mix-weighted ~1.4 B-token-exposure pass over the UPSC corpus (NCERT/reference books repeated ×4 per Muennighoff 2023, IR commentary capped, ~20 % English replay, ~5-10 % instruction-format slice), followed by **rank-64 LoRA-SFT** continuing the same adapter on ~30 K chat-templated English instruction pairs with prompt-side word-count conditioning. LoRA targets all 7 projections in **every** decoder layer (Gemma 42, Qwen 32) → 294 / 224 adapters per model, 144 M / 114 M trainable parameters. Uses **RSLoRA scaling** (α/√r, not α/r) to stabilize the higher rank, **WSD learning-rate schedule** to enable continued training, and a **6-cell ablation grid** to attribute gains. Total compute: ~16 H100-hours CPT + ~6 SFT per model. Hindi is deferred — Qwen-HI catastrophe (v1: 0.426) and Gemma-HI strength (v1: 0.636) are both addressed in the separate Hindi strategy.
+Two-stage training per base model on **English content only**: **rank-64 LoRA-CPT** on a mix-weighted ~1.4 B-token-exposure pass over the UPSC corpus (NCERT/reference books repeated ×4 per Muennighoff 2023, IR commentary capped, ~20 % English replay, ~5-10 % instruction-format slice), followed by **rank-64 LoRA-SFT** continuing the same adapter on ~30 K chat-templated English instruction pairs with prompt-side word-count conditioning. LoRA targets the q/k/v/o/gate/up/down projections present in every decoder layer (Gemma-4-E4B exposes **258** adapter sites — its top 18 layers share KV and carry no k/v_proj; Qwen3.5-4B exposes **128**) → **139.5 M / 84.9 M** trainable parameters (verified on the loaded models, not n_layers×7). Uses **RSLoRA scaling** (α/√r, not α/r) to stabilize the higher rank, **WSD learning-rate schedule** to enable continued training, and a **6-cell ablation grid** to attribute gains. Total compute (measured on the L40S, ~170 s/step at the 262K-token batch): **~67 L40S-h CPT + ~2-3 SFT per model** at bs=1 (the §0 H100 estimate was never validated; flash-attn/bs≥2 reduce this). Hindi is deferred — Qwen-HI catastrophe (v1: 0.426) and Gemma-HI strength (v1: 0.636) are both addressed in the separate Hindi strategy.
 
 ---
 
@@ -28,7 +28,7 @@ Two-stage training per base model on **English content only**: **rank-64 LoRA-CP
 | Word-count adherence FT 0.08-0.09 vs Gemini 0.30-0.48 | Trainable — prompt-side word-count conditioning in SFT (§4.6). |
 | Long-tail subjects (Art & Culture, Misc) clear LOSS on English stratum | CPT corpus must over-sample these subjects relative to natural distribution. |
 | `silly_mistake_prone=1` items lose universally | Calibration gap; deferred to inference fixes. Not a training lever. |
-| Qwen-FT position bias χ² p=1.5e-5 (English) | Balance the answer-letter distribution in the SFT corpus (mechanical fix, no methodology impact). |
+| Qwen-FT position bias χ² p=1.5e-5 (English) | Answer-letter rebalancing of the SFT corpus — NOT YET IMPLEMENTED (deferred; tracked, low expected impact). Flagged here so the claim isn't read as done. |
 | v1 used rank 16, **last-16 layers only** | Surgical FT was OK for SFT; CPT needs **all layers + higher rank** ([Biderman 2024](https://arxiv.org/abs/2405.09673)). |
 
 ---
@@ -41,7 +41,7 @@ All gates evaluated on the **English stratum only**. Hindi gates live in `v2-hin
 
 | Gate | v1 baseline (EN) | v2 target | Failure means |
 |---|---:|---:|---|
-| Task A accuracy EN | 0.652 (Gemma) | **≥ 0.75** | CPT didn't deliver enough fact injection |
+| Task A accuracy EN | 0.652 (Gemma) | **≥ 0.75** (aspirational; +3-6 pp is the literature-realistic expectation — see §11) | CPT didn't deliver enough fact injection |
 | Task A neg-mark score EN | 1.06 (Gemma) | **≥ 1.40** | Wrong-answer confidence still costs marks |
 | Task B BERTScore | 0.833 | **≥ 0.825** (no regression band ±0.01) | CPT damaged the SFT win |
 | Task B word-count adherence | 0.086 | **≥ 0.40** | Length conditioning didn't work |
@@ -88,8 +88,8 @@ But [Shi et al. — "Learning Rate Matters: Vanilla LoRA May Suffice" (arXiv 260
 |---|---|---|
 | Total text decoder layers in base | 42 | 32 |
 | LoRA-targeted layers (v2) | **42 (all)** | **32 (all)** |
-| Projections per layer | 7 (q, k, v, o, gate, up, down) | 7 |
-| **Total LoRA adapters** | **294** | **224** |
+| Projections per layer | 7, EXCEPT the top 18 KV-shared layers (no k/v_proj) | 7 (hybrid layers vary) |
+| **Total LoRA adapter sites** (model-derived, asserted at build) | **258** | **128** |
 | Hidden dim | 2560 | 2560 |
 | FFN intermediate dim | 10240 | 9216 |
 | Embedding layer | **FROZEN** | **FROZEN** |
@@ -126,12 +126,12 @@ Embeddings stay frozen because:
 | **ε** | 1e-8 | 1e-8 |
 | **Weight decay** | 0.1 | 0.01 |
 | **Gradient clipping** | 1.0 | 1.0 |
-| **Peak LR** | **1.0e-5** | **2.0e-4** |
+| **Peak LR** | **1.0e-4** (LoRA-adapter rate, Biderman 2024 — see note below) | **2.0e-4** |
 | **LR schedule** | **WSD (Warmup-Stable-Decay)** | Cosine |
 | **Warmup** | 1 % of steps, linear | 3 % of steps, linear |
 | **Stable phase** | 80 % of steps at peak | n/a |
 | **Decay phase** | 19 % of steps cosine to 0.1× peak | cosine to 0.1× peak |
-| **Min LR** | 1.0e-6 | 2.0e-5 |
+| **Min LR** | 1.0e-5 (0.1× peak) | 2.0e-5 (0.1× peak) |
 
 **Why β₂ = 0.95 for CPT, 0.999 for SFT:** lower β₂ tracks gradient variance over a shorter window, which suits a stationary distribution (raw text). Higher β₂ smooths over more steps, which suits the noisy + diverse SFT mix. This is standard from GPT-3 onward.
 
@@ -159,7 +159,7 @@ On L40S 48 GB, per-device bs=1 + accumulation 64 is the VRAM-safe configuration 
 
 All sources filtered to English at the clean stage (documents with >30% Devanagari among alphabetic characters are dropped; scraped sources like The Hindu carry Hindi-language articles). Bilingual rows in prayas DB are kept on the English side only.
 
-The acquired corpus is ~1.1-1.2 B unique tokens (28-30% of the original 4 B aspiration — comprehensive on named-text coverage, lighter on volume). Per [Muennighoff et al. 2023 (arXiv 2305.16264)](https://arxiv.org/abs/2305.16264), repeating unique data up to ~4 epochs costs almost nothing vs fresh tokens, so the mix repeats the high-yield core rather than padding with replay.
+The acquired corpus is **~0.30 B unique tokens** (after the round-2 growth sweep — PIB back-extension, full DTE archive, RC/QA, qa_bank; pre-sweep it was ~0.18 B). This is below the 1-30 B range of published domain-CPT wins, so the mechanism leans on AdaptLLM-style RC/QA + exam-format qa_bank rather than raw volume. Per [Muennighoff et al. 2023 (arXiv 2305.16264)](https://arxiv.org/abs/2305.16264), repeating unique data up to ~4 epochs costs almost nothing vs fresh tokens, so the mix repeats the high-yield core rather than padding with replay.
 
 **The mix is enforced** — per-source `repeat` (epochs) and `cap_tokens` weights live in [`training/configs/data_mix_cpt.yaml`](training/configs/data_mix_cpt.yaml) and are applied by `tokenize_pack` at document granularity before packing. Summary:
 
@@ -202,7 +202,7 @@ This addresses v1's Task B word-count adherence 0.086. Two supporting fixes land
 
 ### 5.2 Within SFT
 
-Difficulty-mixed ordering — UPSC questions have difficulty tags (`silly_mistake_prone`, `tier_1_difficulty`). v1 had no curriculum; we add a soft easy-to-hard sort within each epoch's shuffle window. Easy first → model gets the format right before facing edge cases. Minor lift expected (3-5 % on `silly=1` cells).
+Difficulty-mixed ordering was planned (a soft easy-to-hard sort within each shuffle window) but is **NOT IMPLEMENTED** — trl shuffles the SFT examples and the expected lift was marginal (3-5% on `silly=1` cells). Descoped; recorded here so §5.2 isn't read as active.
 
 ---
 
@@ -225,7 +225,7 @@ Hindi is handled in a **separate strategy document** (`v2-hindi-strategy.md`, to
 
 | Pulse | Cadence | What runs | Action on failure |
 |---|---|---|---|
-| **Loss pulse** | every 100 steps | dev-set NLL on 200 held-out (not-eval) English UPSC passages | log; investigate if 3 consecutive divergences |
+| **Loss pulse** | (NOT IMPLEMENTED) | a standalone dev-NLL pulse was planned; in practice HF Trainer's own logged training loss + the every-`max_steps//6` task/MMLU/Hindi pulses cover divergence detection | — |
 | **Task pulse** | every 500 steps | held-out probe (`data/eval_set_holdout.parquet`, built by `training/eval/build_holdout.py`): 50 A-EN MCQs run inline; B/C metrics are too expensive mid-train | logged to pulse.jsonl (trend monitoring) |
 | **General-capability pulse** | every 1000 steps | 100-Q MMLU sample (no UPSC overlap) | if drops >2 pp from base, raise replay ratio next phase |
 | **Hindi no-regression pulse** | every 1000 steps | 50 v1 Hindi MCQs | catch English-CPT-induced Hindi regression early; hard-stop if drops >5 pp from v1 baseline |
@@ -244,7 +244,7 @@ Pre-registered to attribute v2's gains correctly:
 |---|---|---|---|---|
 | 1 | **v1 baseline** | already done | — | reference |
 | 2 | **v2 SFT-only** (skip CPT) | r=64 SFT on v1's English pairs (no new pairs added) | vs #1 | "Did rank-64 + RSLoRA help, independent of CPT?" |
-| 3 | **CPT-only** (no v2 SFT — use v1 adapter merged after CPT) | r=64 CPT only | vs #1 | "Did CPT alone inject knowledge?" |
+| 3 | **CPT-only** (no SFT — eval the bare CPT adapter; isolates pure knowledge injection without v1-SFT confound) | r=64 CPT only | vs #1 | "Did CPT alone inject knowledge?" |
 | 4 | **v2 full pipeline (CPT→SFT)** | both phases | vs #2, #3 | "Did stacking the two help over either alone?" |
 | 5 | **v2 full with vanilla LoRA** (no RSLoRA) | same as #4 but α/r scaling | vs #4 | "Did RSLoRA actually matter at r=64?" |
 | 6 | **CPT-50% checkpoint→SFT** | use 50 % CPT ckpt then SFT | vs #4 | "Diminishing returns on CPT tokens?" |
@@ -281,7 +281,7 @@ All ablations evaluated on the same locked v1 Tier-1 eval set with the same BH-F
 | Eval (full Tier-1, reuse v1 pipeline) | 6 | ~0.5 |
 | **Per-model subtotal (GPU only)** | **~80** | **~7-8 days GPU calendar** |
 | **× 2 base models (serial)** | **~160** | **~14 days serial; ~8 days parallel on 2× L40S** |
-| Ablation grid (cells 2, 3, 5, 6 share Phase 0/1 outputs; cells 4 is the headline) | ~550 | +10-14 days parallel |
+| Ablation grid (cells 2,3,5,6 share corpus outputs; cell 4 headline) | ~6 × per-model CPT/SFT (measured) | training only; eval is a separate Make step |
 | **Total GPU** | **~870 L40S-hours** | **~30-45 days end-to-end** |
 
 Cost at L40S spot pricing (~$1.65/hr on AWS as of 2026): ~$1,440 GPU-only; ~$1,700 including storage + S3 egress + dev-loop iteration. The headline run (cell 4 of ablation, both models) is ~$280. Within the v2 budget envelope from [`v2-expert-input-plan.md`](v2-expert-input-plan.md).
@@ -295,7 +295,7 @@ Cost at L40S spot pricing (~$1.65/hr on AWS as of 2026): ~$1,440 GPU-only; ~$1,7
 - **All Hindi improvement work.** Tracked in `v2-hindi-strategy.md` (to be authored). This plan only guards against Hindi *regression*, doesn't target Hindi *gains*.
 - **Format validity ceiling (v1 was 0.61-0.70).** Constrained-decoding fix at inference. Tracked as P0 in [`v2-expert-input-plan.md`](v2-expert-input-plan.md).
 - **ECE calibration (v1 was 0.37-0.89).** Confidence head needs separate retraining + temperature scaling. Tracked as P0 in `v2-expert-input-plan.md`.
-- **Task A residual gap to Gemini (English).** Expected v2 lift on Task A EN is +10-15 pp. Gemini's 0.88 ceiling likely remains above us. Hybrid deployment (Gemini for MCQ, FT-SLM for B/C/E/F/G) stays the recommendation.
+- **Task A residual gap to Gemini (English).** Realistic expected lift is **+3-6 pp** (LoRA-CPT on ~0.3 B domain tokens is below the 1-30 B range of published domain-CPT wins — Biderman 2024 / AdaptLLM; the +10-15 pp originally written here was optimistic). The +0.75 acceptance gate is aspirational, not the expected outcome. Gemini's 0.88 ceiling likely remains above us. Hybrid deployment (Gemini for MCQ, FT-SLM for B/C/E/F/G) stays the recommendation.
 - **Tokenizer rebuilds.** Question lives in Hindi strategy, not here.
 - **Multi-turn conversation FT.** v1 was single-turn; v2 stays single-turn. Multi-turn is a separate adapter pass tracked in `v2-expert-input-plan.md` P3.
 

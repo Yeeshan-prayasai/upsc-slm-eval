@@ -8,8 +8,8 @@ Safety:
   - This script contains no INSERT/UPDATE/DELETE/DDL of any kind against remote.
 
 Output:
-  - data/prayas_local.sqlite   — single SQLite file containing all snapshotted tables
-  - data/prayas_local.sha256   — SHA-256 of the SQLite file for reproducibility
+  - data/db_snapshot.sqlite   — single SQLite file containing all snapshotted tables
+  - data/db_snapshot.sha256   — SHA-256 of the SQLite file for reproducibility
 """
 from __future__ import annotations
 import hashlib

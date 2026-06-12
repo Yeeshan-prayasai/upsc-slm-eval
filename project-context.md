@@ -13,7 +13,7 @@ Quantify the performance gap between **fine-tuned open-source SLMs** (Gemma-4-E4
 
 **v1 outcome (published 2026-06-04):** FT-SLM **wins 3 of 4 core tasks** at q ≤ 0.05 (Mains generation, Rubric grading, Current affairs). Loses Prelims MCQ by 26 pp accuracy. Dashboard live on Streamlit Cloud.
 
-**v2 in progress:** continued pretraining (CPT) on a 1-2 B-token UPSC-domain corpus + SFT with length-penalty loss, targeted at closing the Task A factual-recall gap.
+**v2 in progress:** continued pretraining (CPT) on a ~0.30 B-unique-token UPSC corpus (mix-weighted to ~0.4 B exposures) + SFT with prompt-side word-count conditioning, targeted at closing the Task A factual-recall gap. Realistic expectation +3-6 pp (literature-calibrated), not the aspirational +10.
 
 ---
 
@@ -50,7 +50,7 @@ Quantify the performance gap between **fine-tuned open-source SLMs** (Gemma-4-E4
 | Configs (CPT/SFT/runtime YAML per model) | `training/configs/*.yaml` | 182 |
 | Tests | `training/tests/test_*.py` | 924 |
 
-**Test suite: 114 passing + 1 skipped** (test_cpt_smoke requires CUDA; runs on EC2).
+**Test suite: 139 passing + 1 skipped** (test_cpt_smoke requires CUDA; runs on EC2).
 
 **Key design choices** (all literature-cited; amended 2026-06-11 per the audit in `v2-audit-findings.md`):
 - LoRA rank 64, α=16, **RSLoRA** (Kalajdzievski 2023), all decoder layers × 7 projections — regex covers Gemma-4's nested `model.language_model.layers.*` naming, with an exact 7×n_layers coverage assertion at startup
@@ -152,7 +152,7 @@ Dropped: G.C. Leong (Tesseract on scanned book yielded 24% garbled lines; PMF Ge
 
 **Open items (none blocking):**
 - Yojana / Kurukshetra magazines — `publicationsdivision.gov.in` timing out; deferred
-- Synthetic Q/A augmentation — explicitly deferred; revisit only if v2 Task A misses the +10pp gate
+- Synthetic RC/QA augmentation — IMPLEMENTED (generate_rc_qa.py, AdaptLLM-style over NCERT+refbooks); qa_bank exam-format Q&A added as a ×3 source
 - Hindi corpus — separate effort per [`v2-hindi-strategy.md`](v2-hindi-strategy.md)
 
 ---

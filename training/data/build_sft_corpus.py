@@ -56,7 +56,7 @@ from .acquire._base import RepoPaths
 
 REPO = RepoPaths.root()
 FT_CORPUS = REPO / "data" / "ft_corpus.parquet"
-DB_PATH = REPO / "data" / "prayas_local.sqlite"
+DB_PATH = RepoPaths.db_snapshot()
 OUT_DIR = REPO / "data" / "sft_v2"
 DEFAULT_SEED = 20260605
 DEFAULT_VALID_FRAC = 0.05
@@ -218,7 +218,9 @@ def build(
     # evaluated in Hindi contaminates the Hindi stratum. Exclude by
     # base UUID, any namespace, any language.
     from .leakage import EVAL_SET, build_eval_index, check_corpus_text
-    eval_ids, hash_to_qid, gram_to_qids = build_eval_index(EVAL_SET)
+    HOLDOUT = REPO / "data" / "eval_set_holdout.parquet"
+    idx_paths = [EVAL_SET] + ([HOLDOUT] if HOLDOUT.exists() else [])
+    eval_ids, hash_to_qid, gram_to_qids, gram_lengths = build_eval_index(idx_paths)
     eval_uuids = {parts[1] for qid in eval_ids
                   if len(parts := str(qid).split(":")) >= 2}
     row_uuid = df["pair_id"].astype(str).str.split(":").str[1]
@@ -234,6 +236,7 @@ def build(
             eval_ids=eval_ids,
             hash_to_qid=hash_to_qid,
             gram_to_qids=gram_to_qids,
+            gram_lengths=gram_lengths,
         )
 
     # First pass flags rows sharing any 50-token window with eval gold.

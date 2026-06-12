@@ -137,13 +137,23 @@ def load_base_model(
     from peft import prepare_model_for_kbit_training
     if bnb_cfg is None:
         bnb_cfg = build_bnb_config()
+    # attn_implementation: prefer FlashAttention-2 (the single biggest
+    # throughput lever at seq 4096 — the measured 170 s/step is
+    # attention-bound), fall back to SDPA if flash-attn isn't installed.
+    try:
+        import flash_attn  # noqa: F401
+        attn_impl = "flash_attention_2"
+    except ImportError:
+        attn_impl = "sdpa"
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
         quantization_config=bnb_cfg,
         device_map="auto",
         dtype=torch.bfloat16,
+        attn_implementation=attn_impl,
         trust_remote_code=True,
     )
+    print(f"[model] attn_implementation={attn_impl}")
     # use_cache=False is required when gradient_checkpointing is on
     # (the cache is invalid mid-recomputation; HF logs a warning otherwise).
     model.config.use_cache = False

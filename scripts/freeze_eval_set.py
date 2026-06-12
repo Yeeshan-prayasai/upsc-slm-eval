@@ -1,6 +1,6 @@
 """Stage 1.2 — deterministically sample 2,000 stratified eval items across tasks A/B/C/E.
 
-Reads from the local SQLite snapshot at data/prayas_local.sqlite. Does NOT touch
+Reads from the local SQLite snapshot at data/db_snapshot.sqlite. Does NOT touch
 any remote DB. Run `make snapshot` first if the snapshot file is missing.
 
 Output schema (Parquet):
@@ -94,7 +94,7 @@ def pull_task_A() -> list[dict]:
         paper = r["paper"].upper()
         rows.append(dict(
             question_id=f"prod_mcq:{r['id']}:en",
-            source_db="prod-prayas-db", source_table="mcqs",
+            source_db="prod-db", source_table="mcqs",
             paper=paper, subject="UNTAGGED", language="en",
             gold_payload=dict(
                 question=r["questionText"], options=r["options"],
@@ -170,7 +170,7 @@ def pull_task_E() -> list[dict]:
         month = r["date"][:7] if isinstance(r["date"], str) else r["date"].strftime("%Y-%m")
         out.append(dict(
             question_id=f"news:{r['id']}",
-            source_db="prod-prayas-db", source_table="news_articles",
+            source_db="prod-db", source_table="news_articles",
             paper="UNTAGGED", subject="UNTAGGED", language="en",
             gold_payload=dict(
                 date=str(r["date"]),

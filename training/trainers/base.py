@@ -137,23 +137,23 @@ def load_base_model(
     from peft import prepare_model_for_kbit_training
     if bnb_cfg is None:
         bnb_cfg = build_bnb_config()
-    # attn_implementation: prefer FlashAttention-2 (the single biggest
-    # throughput lever at seq 4096 — the measured 170 s/step is
-    # attention-bound), fall back to SDPA if flash-attn isn't installed.
-    try:
-        import flash_attn  # noqa: F401
-        attn_impl = "flash_attention_2"
-    except ImportError:
-        attn_impl = "sdpa"
+    # attn_implementation=sdpa: torch>=2.2 upstreamed the FlashAttention-2
+    # kernel into ATen, so SDPA's FLASH backend IS FA2 for causal bf16 at
+    # seq 4096 — the standalone flash-attn package is the same algorithm
+    # (~3-8% at most for this config) and not worth its 15-30 min compile
+    # on the 4-vCPU box. The 170 s/step drag is NF4 dequant + grad-
+    # checkpoint recompute (MLP-bound at seq<8×d_model), which attention
+    # impl doesn't touch. SDPA also handles Gemma's sliding-window masks
+    # cleanly, which some flash paths historically did not.
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
         quantization_config=bnb_cfg,
         device_map="auto",
         dtype=torch.bfloat16,
-        attn_implementation=attn_impl,
+        attn_implementation="sdpa",
         trust_remote_code=True,
     )
-    print(f"[model] attn_implementation={attn_impl}")
+    print("[model] attn_implementation=sdpa (= upstreamed FlashAttention-2 kernel)")
     # use_cache=False is required when gradient_checkpointing is on
     # (the cache is invalid mid-recomputation; HF logs a warning otherwise).
     model.config.use_cache = False

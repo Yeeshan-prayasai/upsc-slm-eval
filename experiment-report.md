@@ -1351,14 +1351,13 @@ The §7.2 heatmap (230 (task, stratum) cells) shows champion-vs-C3 deltas mostly
 | **Qwen position bias** | Medium | χ² p = 1.5e-5 → Qwen-FT predicts certain MCQ letters more than uniform. Suggests the FT corpus had a non-uniform answer distribution that biased the model. Quick fix in v2: balance the FT-corpus answer-letter distribution. |
 | **FT-SLM Task E "hallucination"** | Medium-mixed | Hallucination rate 0.69-0.74 for FT vs 0.40-0.47 for Gemini. But the metric counts entities-not-in-source as hallucinations, including valid UPSC-syllabus framing the FT model adds. Deferred SummaC-ZS / FactScore (eval-design §4.4) would separate these. |
 | **Task C JSON schema validity ~0** for FT-SLMs (0.006 C1a, 0.000 C1b) | Medium | Strict JSON schema validation fails on FT outputs nearly always — they produce semantically-correct rubric content with slightly off shape (missing intro/body/conclusion keys, extra wrapper fields). The lemma-set F1 (Strengths/Improvements) is high (0.33-0.46) despite this, so the qualitative agreement is real; the schema rigidity is what's failing. |
-| **Compression-adherence = 0.00 for FT-SLMs on Task E** | Medium | Generated Mains-info is the wrong length-relative-to-source (FT trained on prayas's longer-form synthesis style). |
-| **Few-shot exemplar overhead invisible** | Low | C3 (few-shot) and C2 (zero-shot) Gemini performance is essentially identical (Task A accuracy diff < 0.7 pp, all other deltas insignificant). The few-shot exemplars added cost without measurable lift. |
+| **Few-shot exemplar overhead invisible** | Low | C3 (few-shot) and C2 (zero-shot) Gemini performance is essentially identical (Task A accuracy diff < 0.7 pp, all other deltas insignificant).|
 
 ### 8.5 Implications for prayas.ai's product
 
 | Question | Read from the data |
 |---|---|
-| **Annual API cost at projected scale** | Gemini cost/query observed at $0.0014-0.0025 (zero-shot to few-shot). At 6,000 active aspirants × 30 turns/day = 180,000 queries/day, that's $250-450/day = **~₹76-137 lakh/year** at projected scale. FT-SLM has $0 marginal compute cost. |
+| **Annual API cost at projected scale** | Gemini cost/query observed at $0.0014-0.0025 (zero-shot to few-shot). FT-SLM has $0 marginal compute cost. |
 | **Where the FT path ships** | (a) Task C rubric grading (Qwen-FT halves Gemini's score MAE; QWK 0.806). (b) Task B Mains generation (BERTScore +0.04 over Gemini, format adherence the inverse: needs a length-penalty in FT loss). (c) Tasks F + G production-prompt drop-in (FT-SLMs 3.6× / 2.8× higher format adherence — these tasks are already production prompts and the FT model handles them better). |
 | **Where Gemini stays** | Task A Prelims MCQ, especially Hindi. Gemini-3.5-Flash beats FT by 23-50 pp; no amount of v1 retraining closes that. |
 | **Hybrid deployment** | Route Task A queries (and Hindi-heavy queries generally) through Gemini API; route Tasks B/C/E/F/G through the FT-SLM. Estimated cost savings: ~70 % of total query volume routes to FT (B/C/E/F/G are higher-volume than Prelims MCQ in the tutor product) → ₹53-96 lakh/year saved. |

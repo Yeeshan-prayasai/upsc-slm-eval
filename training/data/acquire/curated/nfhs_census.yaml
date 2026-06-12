@@ -1,0 +1,29 @@
+source: nfhs_census
+description: >
+  NFHS-5 (2019-21) India national report (both volumes, IIPS/MoHFW report
+  hosted on The DHS Program, the official publication platform — the
+  rchiips.org copies now 404) plus Census of India 2011 national summary
+  PDFs from the Registrar General's archive on censusindia.gov.in. Health,
+  demography and population data for UPSC GS-I/GS-II.
+
+items:
+  - url: "https://dhsprogram.com/pubs/pdf/FR375/FR375.pdf"
+    title: "National Family Health Survey (NFHS-5) 2019-21 — India Report, Volume I"
+    filename: "NFHS5_India_Report_Vol1.pdf"
+    year: 2021
+    category: "nfhs"
+  - url: "https://dhsprogram.com/pubs/pdf/FR375/FR375_II.pdf"
+    title: "National Family Health Survey (NFHS-5) 2019-21 — India Report, Volume II"
+    filename: "NFHS5_India_Report_Vol2.pdf"
+    year: 2022
+    category: "nfhs"
+  - url: "https://censusindia.gov.in/nada/index.php/catalog/42604/download/46256/Census%20of%20India%202011-PCA%20Release.pdf"
+    title: "Census of India 2011 — Primary Census Abstract: Release of Data (national highlights)"
+    filename: "Census2011_PCA_Data_Highlights.pdf"
+    year: 2013
+    category: "census"
+  - url: "https://censusindia.gov.in/nada/index.php/catalog/42614/download/46282/Census%20of%20India%202011-Indian%20Census%20in%20Brief.pdf"
+    title: "Census of India 2011 — Indian Census in Brief"
+    filename: "Census2011_Indian_Census_in_Brief.pdf"
+    year: 2013
+    category: "census"

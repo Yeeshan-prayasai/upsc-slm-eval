@@ -1,0 +1,57 @@
+# CPT (continued pretraining) — Gemma-4-E4B-it
+#
+# All knobs match v2-methodology.md §4. Sets the LoRA + CPT-phase
+# optimizer + WSD scheduler + checkpoint cadence. Runtime concerns
+# (batch, seq, precision) come from runtime_l40s.yaml, layered on top.
+
+base_model: google/gemma-4-E4B-it
+corpus_parquet: data/cpt_corpus_gemma.parquet
+output_dir: adapters/gemma4-e4b-upsc-v2-cpt
+
+# max_steps: derived at runtime as ONE epoch over the packed corpus
+# (sequences ÷ 64-per-step). The mix-weighting stage in tokenize_pack
+# already encodes per-source repetition (NCERT ×4, refbooks ×4,
+# ORF/replay capped — training/configs/data_mix_cpt.yaml), so one
+# parquet pass = the intended token exposures. The previous hardcoded
+# 15,260 assumed a 4 B-token corpus that was never acquired (actual
+# ~1.1 B unique) and silently cycled it ~3.5 uncontrolled epochs.
+max_steps: null
+
+# LoRA — methodology §4.2
+lora:
+  r: 64              # r128 analyzed and REJECTED for this corpus size: adapter capacity
+                     # would exceed corpus information (memorization risk, arXiv:2507.21009);
+                     # rank doesn't separate learning below ~1-4B tokens (Biderman 2024); and
+                     # r64 @ scale 2.0 is the distribution-drift minimum (arXiv:2410.21228)
+  alpha: 16          # rsLoRA scale α/√64 = 2.0
+  dropout: 0.05
+  use_rslora: true
+  bias: none
+  task_type: CAUSAL_LM
+
+# CPT-phase optimizer — methodology §4.3 (β2 = 0.95 for CPT).
+# LR 1e-4: LoRA-adapter CPT, not full-parameter CPT. Adapters start
+# from B=0 and need ~10× the full-FT rate (Biderman 2024 "LoRA Learns
+# Less and Forgets Less"; QLoRA used 1e-4–2e-4). The previous 1e-5
+# was a full-parameter re-warming rate (Ibrahim 2024) that left the
+# adapter delta in the noise floor.
+optim:
+  learning_rate: 1.0e-4
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_epsilon: 1.0e-8
+  weight_decay: 0.1
+  max_grad_norm: 1.0
+
+# WSD scheduler — methodology §4.3
+wsd_warmup_frac: 0.01
+wsd_stable_frac: 0.80
+wsd_min_lr_ratio: 0.1
+
+# Checkpointing. The exact-midpoint checkpoint for ablation cell 6 is
+# saved separately by the orchestrator (rotation-exempt) — save_total_limit
+# only governs the rolling resume checkpoints.
+save_steps: 1000
+save_total_limit: 5
+logging_steps: 50
+report_to: none

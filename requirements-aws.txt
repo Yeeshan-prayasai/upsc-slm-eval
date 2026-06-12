@@ -14,3 +14,14 @@ rich==13.9.4                  # trl lazy-imports rich; not pulled as transitive 
 datasets==4.7.0               # required >= 4.7 by trl 1.5
 sentencepiece==0.2.0          # Qwen + Gemma tokenizers
 einops==0.8.0                 # transformer math
+pyyaml==6.0.2                  # training/orchestration/run_{cpt,sft,ablation}.py load .yaml configs
+
+# v2 Phase 0 acquisition (training/data/acquire/*) — needed if running
+# corpus build on EC2. Skip if data was prepared locally and SCP'd up.
+pymupdf4llm==1.27.2.3          # PDF → Markdown (column-aware, OCR-aware). 0.0.30 was an invalid pin — PyPI versioning jumped from 0.0.27 → 0.1.7 → 1.27.x
+pdfplumber==0.11.4             # text-PDF extraction (fast-path fallback)
+pdf2image==1.17.0              # tesseract OCR rasterization (poppler dep, brew/apt)
+pytesseract==0.3.13             # tesseract LSTM OCR (system tesseract binary required)
+markdownify==0.13.1             # HTML → Markdown for PRS / PMF IAS / Mrunal / ORF / newspapers / NDMA
+feedparser==6.0.11              # RSS XML parsing (Hindu + IE sitemaps)
+datasketch==1.6.5               # MinHash LSH near-dup dedup (Penedo 2024 / Lee 2022)

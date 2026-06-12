@@ -1,0 +1,42 @@
+source: rbi
+description: >
+  Reserve Bank of India flagship publications — Annual Report, Financial
+  Stability Reports, Trend and Progress of Banking, Monetary Policy Report
+  and the Payment Systems booklet. Core reference for UPSC GS-III Economy
+  (monetary policy, banking, financial stability, payments).
+  NOTE: rbidocs.rbi.org.in sits behind a Radware bot manager that serves a
+  JS-challenge HTML page to the default corpus-build User-Agent; a full
+  browser-style UA (plus standard Accept-Encoding/Accept-Language headers)
+  receives the PDF. Verify downloads start with %PDF.
+
+items:
+  - url: "https://rbidocs.rbi.org.in/rdocs/AnnualReport/PDFs/0ANNUALREPORT202425DA4AE08189C848C8846718B080F2A0A9.PDF"
+    title: "RBI Annual Report 2024-25"
+    filename: "RBI_Annual_Report_2024_25.pdf"
+    year: 2025
+    category: "annual_report"
+  - url: "https://rbidocs.rbi.org.in/rdocs/PublicationReport/Pdfs/0FSRDEC25D1EB9AAEE5724BD5A3E068490996BAD5.PDF"
+    title: "RBI Financial Stability Report — December 2025"
+    filename: "RBI_FSR_Dec_2025.pdf"
+    year: 2025
+    category: "financial_stability"
+  - url: "https://rbidocs.rbi.org.in/rdocs/PublicationReport/Pdfs/0FSRJUNE20253006258AE798B4484642AD861CC35BC2CB3D8E.PDF"
+    title: "RBI Financial Stability Report — June 2025"
+    filename: "RBI_FSR_Jun_2025.pdf"
+    year: 2025
+    category: "financial_stability"
+  - url: "https://rbidocs.rbi.org.in/rdocs/Publications/PDFs/0RTP291220258C89B9E5F3F240AEB82AC25A1707A8C6.PDF"
+    title: "Report on Trend and Progress of Banking in India 2024-25"
+    filename: "RBI_Trend_Progress_Banking_2024_25.pdf"
+    year: 2025
+    category: "banking"
+  - url: "https://rbidocs.rbi.org.in/rdocs/Publications/PDFs/MPRAPRIL080426F22A3C8019DF4BDE889912B6209E8B7B.PDF"
+    title: "RBI Monetary Policy Report — April 2026"
+    filename: "RBI_MPR_Apr_2026.pdf"
+    year: 2026
+    category: "monetary_policy"
+  - url: "https://rbidocs.rbi.org.in/rdocs/Publications/PDFs/PSSBOOKLET93D3AEFDEAF14044BC1BB36662C41A8C.PDF"
+    title: "Payment Systems in India — Journey in the Second Decade of the Millennium (2010-2020)"
+    filename: "RBI_Payment_Systems_Booklet_2010_2020.pdf"
+    year: 2021
+    category: "payments"

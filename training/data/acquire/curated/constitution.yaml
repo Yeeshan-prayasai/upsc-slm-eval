@@ -1,0 +1,20 @@
+source: constitution
+description: >
+  Constitution of India — canonical full-text PDFs from Government of India
+  publishers + the original handwritten manuscript. Critical reference for
+  UPSC GS-II Polity, GS-II Social Justice (Fundamental Rights), and
+  GS-IV Ethics (Constitutional Morality / Preamble).
+
+items:
+  # Authoritative Constitution text — Department of Legal Affairs S3 CDN.
+  # 2 MB; current text with all amendments through 2023.
+  - url: "https://cdnbbsr.s3waas.gov.in/s380537a945c7aaa788ccfcdf1b99b5d8f/uploads/2023/05/2023050195.pdf"
+    title: "Constitution of India — Updated text (Legislative Dept., 2023 update)"
+    filename: "constitution_of_india_2023_text.pdf"
+
+  # Original handwritten manuscript — 49 MB, includes the calligraphic
+  # 1949 original. Historical reference; also useful for the Preamble +
+  # historical document study (UPSC sometimes references the original).
+  - url: "https://www.constitutionofindia.net/wp-content/uploads/2023/03/Original-Manuscript-of-the-Constitution-of-India_New1.pdf"
+    title: "Constitution of India — Original Manuscript (1949)"
+    filename: "constitution_of_india_original_manuscript_1949.pdf"

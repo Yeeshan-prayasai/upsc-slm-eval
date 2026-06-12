@@ -1,0 +1,20 @@
+# Hardware / precision runtime config for NVIDIA L40S (48 GB VRAM).
+#
+# Effective batch = per_device_train_batch_size × gradient_accumulation_steps
+#                 × max_seq_length tokens
+#               = 1 × 64 × 4096 = 262,144 tokens/step (matches methodology §4.4)
+#
+# At rank 64 + all decoder layers + seq 4096 + QLoRA NF4 + paged_adamw_8bit
+# the predicted VRAM footprint is ~22-30 GB; the L40S 48 GB headroom is
+# sufficient. If a smoke test shows OOM, fall back to runtime_l40s_tight.yaml
+# (seq 2048, grad_accum 128) which preserves the 262K-token effective batch.
+
+runtime:
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 64
+  max_seq_length: 4096
+  bf16: true
+  gradient_checkpointing: true
+  dataloader_num_workers: 4
+  optim: paged_adamw_8bit
+  seed: 20260514

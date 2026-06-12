@@ -1,0 +1,28 @@
+source: dm_core
+description: >
+  Core disaster-management framework documents missing from the ndma
+  source (which holds guidelines, reports and annual reports only) —
+  the DM Act 2005, National Policy on DM 2009, National DM Plan 2019 and
+  the Sendai Framework. UPSC GS-III disaster management backbone.
+
+items:
+  - url: "https://ndma.gov.in/sites/default/files/PDF/DM_act2005.pdf"
+    title: "The Disaster Management Act, 2005"
+    filename: "Disaster_Management_Act_2005.pdf"
+    year: 2005
+    category: "legislation"
+  - url: "https://ndma.gov.in/sites/default/files/PDF/national-dm-policy2009.pdf"
+    title: "National Policy on Disaster Management, 2009"
+    filename: "National_Policy_on_Disaster_Management_2009.pdf"
+    year: 2009
+    category: "policy"
+  - url: "https://ndma.gov.in/sites/default/files/PDF/ndmp-2019.pdf"
+    title: "National Disaster Management Plan, 2019"
+    filename: "National_Disaster_Management_Plan_2019.pdf"
+    year: 2019
+    category: "plan"
+  - url: "https://www.unisdr.org/files/43291_sendaiframeworkfordrren.pdf"
+    title: "Sendai Framework for Disaster Risk Reduction 2015-2030 (UNDRR, English)"
+    filename: "Sendai_Framework_DRR_2015_2030.pdf"
+    year: 2015
+    category: "international_framework"

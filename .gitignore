@@ -102,3 +102,14 @@ Thumbs.db
 # Streamlit
 .streamlit/secrets.toml
 api-key
+
+# Corpus working trees (rebuilt from cpt_raw; huge, not source)
+data/cpt_clean/
+data/cpt_clean_dedup/
+data/cpt_text/
+data/cpt_raw/
+data/cpt_corpus_manifest.json
+data/sft_v2/
+# Uploaded reference-book PDFs stay out of git entirely
+*.pdf
+UPSC_Source_List.docx

@@ -1,0 +1,53 @@
+# SFT config — Gemma-4-E4B-it, continues from the CPT adapter
+#
+# Word-count adherence (v1's Task B failure) is handled in the DATA:
+# rows with a known answer-length target carry "Answer in approximately
+# N words." in the prompt and plain CE learns the association. (The
+# length-penalty loss term this replaces was computed from label
+# lengths — a constant w.r.t. parameters — and trained nothing.)
+# SFT optimizer differs from CPT (β2 default, lower wd; Ibrahim 2024).
+
+base_model: google/gemma-4-E4B-it
+train_jsonl: data/sft_v2/train.jsonl
+valid_jsonl: data/sft_v2/valid.jsonl
+output_dir: adapters/gemma4-e4b-upsc-v2-sft
+resume_lora_from: adapters/gemma4-e4b-upsc-v2-cpt/final   # CPT adapter output
+
+# Derived at runtime: 2 epochs over the train split (methodology §4.4).
+# v1's 16,000 steps were at effective batch 8; v2's runtime is
+# effective batch 64, where 16,000 steps would be ~34 epochs of
+# memorization (and checkpoint rotation kept only the most-overfit
+# tail — load_best_model_at_end now retains the best-eval checkpoint).
+max_steps: null
+epochs: 2.0
+
+# Same LoRA as CPT (we continue the same delta)
+lora:
+  r: 64
+  alpha: 16
+  dropout: 0.05
+  use_rslora: true
+  bias: none
+  task_type: CAUSAL_LM
+
+# SFT-phase optimizer — methodology §4.3 (β2 = 0.999, LR = 2e-4, wd = 0.01)
+optim:
+  learning_rate: 2.0e-4
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 1.0e-8
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+# Cosine schedule (SFT, not WSD) — 3% linear warmup → cosine to a 10%
+# floor (cosine_with_min_lr; plain HF cosine decays to 0).
+warmup_ratio: 0.03
+min_lr_rate: 0.1
+
+# ~950 total steps at 2 epochs → save/eval cadence of 100 gives ~9
+# eval points for best-checkpoint selection.
+save_steps: 100
+save_total_limit: 3
+logging_steps: 50
+eval_steps: 100
+report_to: none

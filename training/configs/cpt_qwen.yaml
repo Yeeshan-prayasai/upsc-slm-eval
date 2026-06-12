@@ -1,0 +1,38 @@
+# CPT — Qwen-3.5-4B
+#
+# Same recipe as cpt_gemma.yaml; only the base model + corpus +
+# output_dir differ. LoRA + optimizer + scheduler are model-agnostic.
+
+base_model: Qwen/Qwen3.5-4B
+corpus_parquet: data/cpt_corpus_qwen.parquet
+output_dir: adapters/qwen35-4b-upsc-v2-cpt
+
+# Derived at runtime — one epoch over the mix-weighted packed corpus
+# (see cpt_gemma.yaml for the full rationale).
+max_steps: null
+
+lora:
+  r: 64              # see cpt_gemma.yaml for the r128-rejection rationale
+  alpha: 16
+  dropout: 0.05
+  use_rslora: true
+  bias: none
+  task_type: CAUSAL_LM
+
+# LoRA-appropriate CPT rate (Biderman 2024) — see cpt_gemma.yaml.
+optim:
+  learning_rate: 1.0e-4
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_epsilon: 1.0e-8
+  weight_decay: 0.1
+  max_grad_norm: 1.0
+
+wsd_warmup_frac: 0.01
+wsd_stable_frac: 0.80
+wsd_min_lr_ratio: 0.1
+
+save_steps: 1000
+save_total_limit: 5
+logging_steps: 50
+report_to: none

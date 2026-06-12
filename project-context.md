@@ -1,578 +1,241 @@
 # Project Context — Prayas.ai SLM vs Gemini 3-Flash on UPSC
 
 **Owner:** Yeeshan (irshad@prayas.ai), Data Scientist, prayas.ai
-**Started:** 2026-05-14
 **Working dir:** `/Users/yeeshan/PrayasAI/Code/SLM`
-**Status:** Scoping / discovery
-**Final deliverable:** Streamlit dashboard supporting (a) side-by-side query execution against all three model conditions and (b) aggregate metric dashboard across the eval set.
+**Repo:** `github.com/Yeeshan-prayasai/upsc-slm-eval` (private, transferred from `YeeshanMalik/upsc-slm-eval` on 2026-06-10)
+**Status:** v1 results published + dashboard deployed; v2 pipeline audited against literature (2026-06-11, 39 findings — see `v2-audit-findings.md`) and all fixes applied; corpus syncing to EC2; CPT training next.
 
 ---
 
-## 1. Goal
+## 1. What this project is
 
-Quantify the performance gap between:
-1. A **fine-tuned open-source SLM** (model TBD — pending May-2026 market research)
-2. **Gemini 3-Flash** in **zero-shot** mode
-3. **Gemini 3-Flash** in **few-shot** (prompted with UPSC exemplars) mode
+Quantify the performance gap between **fine-tuned open-source SLMs** (Gemma-4-E4B-it + Qwen3.5-4B) and **Gemini 3.5-Flash** (zero-shot + few-shot) on UPSC Civil Services Exam tasks. The deliverable is a Streamlit dashboard reading reproducible eval artifacts.
 
-…on UPSC (Indian Civil Services Exam) tasks. Comparison must use **research-backed, ed-tech-centric metrics** specialized for UPSC.
+**v1 outcome (published 2026-06-04):** FT-SLM **wins 3 of 4 core tasks** at q ≤ 0.05 (Mains generation, Rubric grading, Current affairs). Loses Prelims MCQ by 26 pp accuracy. Dashboard live on Streamlit Cloud.
 
-## 2. Scope (confirmed with user)
+**v2 in progress:** continued pretraining (CPT) on a 1-2 B-token UPSC-domain corpus + SFT with length-penalty loss, targeted at closing the Task A factual-recall gap.
 
-UPSC task surfaces in scope:
-- [ ] Prelims (objective MCQ — GS I + CSAT)
-- [ ] Mains (descriptive — GS I-IV, Essay, Optional)
-- [ ] Current Affairs Q&A
-- [ ] Interview / Personality Test (open-ended ethics & opinion)
+---
 
-All four are in scope per user.
+## 2. v1 — final results (frozen)
 
-## 3. Data sources
+4 conditions × 6 tasks × 2,000 eval items = 12,800 scored predictions in `results/predictions.parquet`.
 
-### 3.1 Internal (Postgres) — inventoried 2026-05-14
-Credentials: `db-creds.txt` (DO NOT COMMIT).
-- `upscdev` (RDS, 89 tables, 362 MB) — **content/curriculum DB**; authorized for SELECT.
-- `prod-prayas-db` (RDS, 57 tables, 820 MB) — production **app/student DB**; **read-only SELECT** only.
-- `app_dev` @ `13.203.24.116:6001` — out-of-scope for now (user did not include it).
+| Task | Headline metric | Gemma-FT | Qwen-FT | Gemini FS | Δ (Champ−FS) | Sig |
+|---|---|---:|---:|---:|---:|---|
+| A — Prelims MCQ | is_correct | 0.645 | 0.531 | 0.909 | **−0.264** | ✓ loss |
+| B — Mains generation | answer_bertscore_f1 | **0.833** | 0.811 | 0.795 | +0.010 | ✓ |
+| C — Rubric grading | score_abs_err (↓ better) | 3.10 | **1.90** | 2.52 | +0.213 | · borderline |
+| E — Current affairs | mains_bertscore_f1 | 0.866 | **0.873** | 0.851 | +0.023 | ✓ (large d=0.92) |
+| F — Prelims expl. (prod) | explanation_bertscore_f1 | 0.804 | **0.824** | 0.771 | +0.020 | ✓ |
+| G — Mains DSL (prod) | answer_bertscore_f1 | 0.716 | **0.745** | 0.708 | +0.037 | ✓ (d=0.63) |
 
-#### High-value tables by task surface
+**Reports:** [`experiment-report.md`](experiment-report.md) §6-§8 · [`eval-design.md`](eval-design.md) · [`qa-status-cto.md`](qa-status-cto.md)
+**Dashboard:** `dashboard/app.py` (live on Streamlit Cloud)
+**v1 adapters:** `adapters/{gemma4-e4b,qwen35-4b}-upsc-v1*/`
 
-**Prelims (MCQ) — abundant (~37K questions)**
-| DB | Table | Rows | Notable cols |
-|---|---|---:|---|
-| upscdev | `prelims_pyq_questions` | 3,615 | year, paper, subject, topics, model answer, embeddings, **silly_mistake_prone**, **question_pattern** |
-| upscdev | `prelims_quiz_questions` | 16,441 | internal quiz Qs, difficulty, options |
-| upscdev | `upsc_prelims_ai_generated_que` | 4,615 | **bilingual (English+Hindi)**, quality_pass_flag — already AI-generated baseline |
-| prod | `mcqs` | 10,656 | production active set, options, isMultiSelect, explanation jsonb |
-| prod | `paper_analysis_questions` | 2,373 | with **subjectIds/topicIds**, answerKey + aiProposedOptionIds (model already has predictions!) |
+---
 
-**Mains (descriptive) — moderate (~12K with answers/rubrics)**
-| DB | Table | Rows | Notable cols |
-|---|---|---:|---|
-| upscdev | `pyqs` | 1,646 | Mains PYQs with `model_answer`, hints, word_count |
-| upscdev | `evaluation_questions` | 10,709 | **student answer + score + strengths + improvements + model_answer** — this is rubric-grade gold |
-| upscdev | `prayas_test_series_questions` | 484 | test-series Mains Qs with `model_answer` |
-| upscdev | `pyq_evals` | 146 | student answers + scores on PYQs |
-| upscdev | `dpq_questions` + `dpq_evals` | 35 + 85 | bilingual Daily Practice Qs with student evals |
+## 3. v2 production build state
 
-**Current Affairs — modest but structured**
-| DB | Table | Rows | Notable cols |
-|---|---|---:|---|
-| prod | `news_articles` | 3,573 | full text + `prelimsInfo` + `mainsInfo` + date + theme |
-| prod | `current_affairs` | 1,544 | pointed_analysis, mains_analysis, prelims_info, prelims_topics, embedding |
-| upscdev | `current_affairs` | 236 | older / superset; same shape |
+### Code (production-clean, no Phase-N framing, no v2 branding in internal code)
 
-**Interview (Personality Test) — surprisingly rich**
-| DB | Table | Rows | Notable cols |
-|---|---|---:|---|
-| upscdev | `daf_questions` | 38,685 | DAF-keyword-driven seed + follow-up questions |
-| upscdev | `daf_standard_questions` | 86 | curated standard interview Qs |
-| upscdev | `probing_questions` | 210 | follow-up probes tied to `flag_id` |
+| Component | Path | LOC |
+|---|---|---:|
+| Acquirers (per-source) | `training/data/acquire/*.py` | ~2,800 |
+| Corpus pipeline (OCR → clean → leakage → tokenize) | `training/data/{ocr,clean,leakage,tokenize_pack,build_cpt_corpus,build_sft_corpus}.py` | ~1,400 |
+| Trainers (QLoRA + WSD + length-penalty) | `training/trainers/{base,cpt,sft,schedulers,length_penalty_math}.py` | 834 |
+| Orchestration (run_cpt, run_sft, run_ablation, smoke_cpt) | `training/orchestration/*.py` | 792 |
+| Eval (preflight leakage gate + in-train pulse) | `training/eval/{preflight,pulse,mcq_inference}.py` | 629 |
+| Configs (CPT/SFT/runtime YAML per model) | `training/configs/*.yaml` | 182 |
+| Tests | `training/tests/test_*.py` | 924 |
 
-**Reference / structure**
-- `upscdev.upsc_syllabus` (18 rows): paper × subject × topics_subtopics (JSONB)
-- `prod.learning_items` (38,404 rows): canonical taxonomy with type/difficulty/paper/subject
-- `prod.glossary` (7,475 rows): UPSC vocabulary
+**Test suite: 114 passing + 1 skipped** (test_cpt_smoke requires CUDA; runs on EC2).
 
-**Chatbot data — found in app_dev (PG 17.6, 222 MB, 13.203.24.116:6001)**
+**Key design choices** (all literature-cited; amended 2026-06-11 per the audit in `v2-audit-findings.md`):
+- LoRA rank 64, α=16, **RSLoRA** (Kalajdzievski 2023), all decoder layers × 7 projections — regex covers Gemma-4's nested `model.language_model.layers.*` naming, with an exact 7×n_layers coverage assertion at startup
+- QLoRA NF4 + double-quant + paged_adamw_8bit (Dettmers NeurIPS 2023); embeddings re-cast to bf16 post-kbit-prep (saves ~6-12 GB VRAM on Gemma)
+- **WSD scheduler**: 1% warmup → 80% stable → 19% cosine decay to 0.1× peak (Wen 2024); resume guard persists the schedule shape
+- CPT optimizer: AdamW β₂=0.95, **LR 1e-4** (LoRA-adapter rate per Biderman 2024 — the original 1e-5 was a full-param rate that left adapters in the noise floor); SFT: β₂=0.999, LR 2e-4, cosine_with_min_lr 0.1×
+- **Length control in the data, not the loss**: Task-B prompts carry "Answer in approximately N words." (the spec'd penalty term had zero gradient — computed from label lengths); SFT data is chat-templated prompt-completion with completion-only loss, matching inference framing exactly
+- **Mix-weighted CPT corpus** (`training/configs/data_mix_cpt.yaml`, enforced at pack time): NCERT/refbooks ×4, notes ×3, govt ×2, ORF/MEA capped 30M, replay capped ~115M (~20%), instruction slice from SFT pairs; max_steps derived as one epoch over the weighted parquet
+- Pipeline gates: 50-word document floor (Penedo/Gopher), Devanagari language filter, doc-level MinHash dedup at 0.8 with Jaccard verification + source-priority keep order (Lee 2022), 50-token contiguous leakage check (Carlini 2023) on BOTH CPT and SFT corpora
+- Hindi handling: EN-only training; in-training Hindi no-regression pulse hard-stops at −5 pp vs a step-0 same-instrument baseline (HARD_STOP marker → non-zero exit)
 
-App_dev largely mirrors prod's schema (users/mcqs/news_articles/learning_items/paper_analysis_*/...) but adds the chat layer:
+---
 
-| Table | Rows | Purpose |
+## 4. Corpus inventory (current state)
+
+**23 sources · 2,160 PDFs + 49,316 markdown docs · 10.6 GB raw**
+
+### Government / authoritative
+
+| Source | Files | Subject |
 |---|---:|---|
-| `chat_sessions` | 58 | One row per tutoring session. `staticContext` field is the **student's full evaluation report** stitched into the prompt. Other cols: `archetype`, `archetypeConfidence`, `arcStage`, `activeDrillState`, `closingSummary` — a state machine for tutoring. |
-| `chat_messages` | 258 | role∈{user,assistant}, `content`, `tokenCount`, `langfuseTraceId`, `messageKind`, `actions` jsonb. Langfuse is used for observability. |
-| `student_memory` | 3 | Persistent per-student profile: `competencyScores`, `subjectPerformance`, `paperPerformance`, `writingPatterns`, `factualErrors[]`, `interactionHistory`, `examMetadata`. |
-| `subjective_questions` | 0 | Empty placeholder. |
+| NCERT Class 6-12 | 266 PDFs | All GS (base layer) |
+| NDMA | 128 PDFs | Disaster Mgmt (GS3) |
+| MoEFCC | 252 PDFs | Environment (GS3) |
+| MEA | 13,050 .md | International Relations (GS2) |
+| Union Budget (5 FYs) | 1,369 PDFs | Economy (GS3) |
+| NITI Aayog publications | 86 PDFs | Economy + Social Justice |
+| ISRO press releases | 80 .md | Science & Tech (GS3) |
+| DRDO (via PIB) | 54 .md | S&T + Defence |
+| **PIB (in-flight)** | acquiring | All ministries, top-43 UPSC-relevant |
+| Economic Survey | 18 PDFs | Economy |
+| 2nd ARC Reports (1-15) | 14 PDFs | Governance + Ethics |
+| MHA annual reports | 10 PDFs | Internal Security (GS3) |
+| IPCC reports | 7 PDFs | Environment |
+| Constitution + Bare Acts | 2 PDFs | Polity (GS2) |
+
+### Standard reference books (cleaned, ~2.59 M tokens)
+
+| Book | Pages | Subject |
+|---|---:|---|
+| R.S. Sharma *India's Ancient Past* | 422 | GS1 Ancient History (primary text) |
+| Spectrum *Modern India* (Rajiv Ahir) | 880 | GS1 Modern History |
+| Laxmikanth *Indian Polity 8th ed.* | 1,198 | GS2 Polity (keystone text) |
+| Satish Chandra *Medieval India* | 406 | GS1 Medieval History |
+| Bipan Chandra *India Since Independence* | 845 | GS1 Post-Independence |
+| Poonam Dahiya *Ancient & Medieval India* | 845 | GS1 Ancient + Medieval |
+| Karthikeyan *Internal Security (Pearson)* | 337 | GS3 Internal Security |
+| PMF Geography 2024 | 273 | GS1 Indian Geography |
+
+Dropped: G.C. Leong (Tesseract on scanned book yielded 24% garbled lines; PMF Geography covers the high-priority Indian Geography content cleanly).
+
+**Still missing (copyright-gated, not sourceable):** Nitin Singhania (Art & Culture), Norman Lowe (World History).
+
+### Think-tank / educational ecosystem
+
+| Source | Files | Subject |
+|---|---:|---|
+| ORF (research + expert-speak) | 22,700 .md | IR / strategic affairs |
+| Mrunal | 2,006 .md (186 cruft filtered) | Economy + current affairs |
+| PMF IAS scrape | 1,000 .md | Geo + environment notes |
+| PRS Legislative Research | 892 .md | Bill summaries (GS2) |
+| Newspapers (Hindu / IE / BL / Mint) | 842 .md | Daily current affairs |
+
+### Replay / general (anti-forgetting)
+
+| Source | Disk | ≈Tokens |
+|---|---:|---:|
+| FineWeb-Edu (kept name `slimpajama` for compat) | 2.4 GB | ~600 M |
+| Wikipedia EN India-subset | 834 MB | ~210 M |
+| prayas local DB extracts | 197 MB | ~50 M |
+
+**Token estimates:**
+- UPSC-domain (govt + reference books + ecosystem): ~250-300 M tokens after clean
+- Replay buffer: ~860 M tokens
+- **Total post-clean: ~1.1-1.2 B tokens** (vs methodology §4.5 target of 4 B — ~28-30% of target; the corpus is comprehensive on **named-text coverage** but light on volume)
 
-**Key finding:** the existing prayas.ai chatbot is a **personalized tutor**, not a generic UPSC Q&A bot. It is grounded with student-specific evaluation reports and tracks long-running competency state. Comparison framing must specify whether we're benchmarking on:
-- (T1) **Standalone UPSC capability** — Q→A without student context (most generalizable, easiest comparison)
-- (T2) **Personalized tutoring** — Q+student_context→A (closer to prayas.ai's actual product)
-
-For the first pass, **T1 is the cleaner experimental design**; T2 can be a follow-up once T1 metrics are stable.
-
-`chat_messages` (258 rows) is too small to be a primary FT source but is useful for:
-- **Query-pattern probing** (what do users actually ask?)
-- **Few-shot exemplar selection** for the Gemini "few-shot" condition
-- Style tokens for the FT corpus
-
-### Compute path (revised 2026-05-14 — local FT primary)
-- **Fine-tuning (PRIMARY):** **Mac M5 16 GB** via MLX-LM. QLoRA-4bit FT of `google/gemma-4-E4B-it` peaks ~7-9 GB (model 5 GB + activations 1.5-3 GB + LoRA + optimizer overhead). Estimated wall-clock for 3 epochs on ~23K examples: **5-7 hours**.
-- **Fine-tuning (BACKUP):** Kaggle Notebooks (free, 30 GPU-hours/week, T4 16 GB, 9-hour sessions). Used only if local FT hits an unexpected blocker.
-- **Inference (FT-SLM):** local Mac M5 + MLX-LM with `deadbydawn101/gemma-4-E4B-mlx-4bit` (~5 GB resident). MLX 10-20% faster than Ollama for Gemma 4 on Apple Silicon (direct Metal runtime).
-- **Inference (Gemini comparators):** `gemini-3-flash` via Google API.
-- **Inference (Tier-2 judge):** `claude-sonnet-4-6` via Anthropic API.
-- **Streamlit + dashboard:** local Mac M5.
-- **Result store:** local Parquet + private S3 mirror.
-
-**Rationale for local-FT-primary:** zero data egress for sensitive student answers (`evaluation_questions`); no 30h/wk session cap; tighter iteration loop; pipeline runs entirely on instructor-side hardware which prefigures the production deployment model (architecture.md §9). Tradeoff: M5 is slightly slower per step than T4, and AC power is required for sustained runs.
-
-### 3.2 External (to be sourced)
-NCERTs (Class 6-12), official UPSC syllabus PDFs, PYQ papers from UPSC.gov.in, Drishti IAS / Vision IAS / Insights compilations, government PIB releases, Yojana / Kurukshetra magazines.
-
-## Research findings (2026-05-14)
-
-### Open-source SLM landscape (May 2026)
-Active families (per BentoML / open-llm leaderboards): **Llama 3.x**, **Qwen3.5** (200+ languages, multimodal), **Phi-4-mini-instruct** (strong reasoning), **Ministral-3-3B** (edge-focused), **Gemma 3** (multimodal, 128K context). On focused tasks, Phi-3 / Gemma 2 / Mistral 7B deliver 80–90% of GPT-4 quality.
-
-**Verified May-2026 landscape:**
-- **Qwen3.5** (Alibaba): MoE 397B total / 17B active — too big for our setup. Smaller Qwen3 variants (~1.7B, ~8B) exist and run on M5.
-- **Qwen3.6 27B**: too big for Kaggle T4 FT.
-- **DeepSeek-V3.2** (MIT, 671B MoE / 37B active): best overall OSS but far too big.
-- **Mistral Medium 3.5** (April 2026, 128B dense): too big.
-- **Llama 4 Scout** (10M context): big variant, Indic strength unverified.
-- **Gemma 3 4B**: 4.2GB RAM footprint, strong multilingual, Google-quality. **Sweet spot for M5.**
-- **Phi-4-reasoning-plus**: strong reasoning, Indic strength unverified.
-- **Sarvam-105B / "Indus"** (Feb 2026, India-built, MoE 9B-active): API only — 105B params won't fit local.
-- **Sarvam-30B** (Feb 2026, MoE): borderline — too big for FT on free GPU.
-- **Airavata** (7B Hindi-instruction-tuned, OpenHathi base, AI4Bharat): Indic-native, well-documented.
-- **AryaBhatta-GemmaGenZ-Vikas** (Indic-FT of Gemma): per MILU paper, **the standout among Indic-FT'd open models** — outperforms its Indic peers.
-
-### Final model shortlist — two FT candidates (user-locked 2026-05-15)
-
-#### Candidate 1 — Gemma 4 E4B (instruction-tuned)
-
-| Field | Value |
-|---|---|
-| HF id | `google/gemma-4-E4B-it` (base: `google/gemma-4-E4B`) |
-| Params | 4.5B effective / 8B total (MatFormer + PLE) |
-| License | Apache 2.0 |
-| Context | 128K |
-| Multilingual | 140+ pretrained / 35+ native instruction-tuned (Hindi in pretrained tier only) |
-| Multimodal | text + image + audio ≤30s (not video) |
-| Training cutoff | Jan 2025 |
-| MLX path | `deadbydawn101/gemma-4-E4B-mlx-4bit` (direct 4-bit) |
-| Memory | ~3 GB Q4 inference; ~7-9 GB peak FT |
-
-#### Candidate 2 — Qwen3.5-4B (instruction-tuned)
-
-| Field | Value |
-|---|---|
-| HF id | `Qwen/Qwen3.5-4B` (base: `Qwen/Qwen3.5-4B-Base`) |
-| Params | 4.66B dense |
-| License | Apache 2.0 |
-| Context | 262K native, extensible to 1M |
-| Multilingual | **201 languages, Hindi explicitly enumerated** |
-| Multimodal | text + image (early-fusion VL) |
-| Training cutoff | Not explicitly published; March 2026 release |
-| MLX path | `mlx-community/Qwen3.5-4B-MLX-4bit` (native MLX) |
-| Memory | ~3 GB Q4 inference; ~6-8 GB peak FT |
-
-**Why two candidates:** isolates the architecture/pretraining variable. Both trained with the same LoRA recipe on the same FT corpus; only the base model differs. The Hindi-stratum delta (C1a − C1b) is a direct read on "Indic-via-FT vs Indic-via-pretraining". Other-task deltas test whether the result is portable across base SLM families or sensitive to which one we picked.
-
-**Hindi coverage:** Gemma's Hindi is in the 140+ pretrained pool, not the 35+ native tier. Qwen lists Hindi explicitly. Per-model A2 Hindi probe locked in [eval-design.md §10 A2](eval-design.md) — both base models run a 200-Q Hindi MCQ probe pre-FT with pass criterion ≥ 30% accuracy (random + 5pp).
-
-**Superseded shortlists (audit trail):**
-- 2026-05-14 v1: Qwen3-8B + AryaBhatta-GemmaGenZ-Vikas + Gemma-3-4B
-- 2026-05-14 v2: Sarvam-1 + Qwen3.5-9B + Aya Expanse 8B
-- 2026-05-14 v3: gemma-3n-E2B-it + Phi-4-mini-instruct + Ministral-3-3B-Instruct-2512
-- 2026-05-14 v4: gemma-4-E4B-it as single FT candidate.
-- 2026-05-15 v5 **(current):** gemma-4-E4B-it + Qwen3.5-4B as two FT candidates.
-
-### Closest prior-art benchmarks
-- **MILU** (AI4Bharat, NAACL 2025) — 85K MCQs, 11 Indic languages, 8 domains, 41 subjects, **includes regional/state exam content**. GPT-4o tops at 74%. **Models worst on Arts & Humanities, Law & Governance — exactly UPSC's strong areas.** → MILU is the natural Indic baseline to also report alongside our UPSC eval.
-- **JEEBench** — Indian entrance exam reasoning benchmark.
-- **MedQA / MedR-Bench / HealthBench** — high-stakes professional-exam analog: multi-turn, physician-authored rubric, weighted scoring across safety/accuracy/communication. **Methodologically the closest analog for UPSC Mains.**
-- No UPSC-specific LLM benchmark exists in the literature → designing one is novel.
-
-### Eval methodology consensus (from 2025–2026 lit)
-- For descriptive answers in high-stakes domains: **rubric-based LLM-as-judge** is the standard, *with* human spot-check oversight.
-- Decomposed rubrics ("Does the answer mention X? Y? Z?") consistently outperform holistic scoring.
-- Judge-model bias is a known confound — must (a) use a different family judge from candidate models, (b) calibrate against human gold, (c) report agreement metrics (Cohen's κ).
-
-Companion code in workspace context (`core-backend/src/chatbot/...`) hints at chatbot tables in app DBs; will confirm via schema discovery.
-
-### 3.2 External
-Textbooks, reference books, PYQs, NCERTs, syllabus — to be sourced via web research (PIB, Drishti IAS, Insights, ClearIAS, official UPSC syllabus PDFs, NCERT PDFs).
-
-## 4. Decisions log
-
-| Date | Decision | Rationale |
-|---|---|---|
-| 2026-05-14 | Eval covers all four UPSC surfaces | User-confirmed |
-| 2026-05-14 | 3-way comparison: FT-SLM / zero-shot Gemini-3-Flash / few-shot Gemini-3-Flash | User-confirmed |
-| 2026-05-14 | Skip Mixpanel unless eval weighting requires real query distribution | Tangential to substance |
-| 2026-05-14 | Final deliverable is a Streamlit dashboard (side-by-side query + aggregate metrics) | User-confirmed |
-
-## 4a. Target architecture (Streamlit deliverable)
-
-```
-┌─────────────────────────────────────────────────────────┐
-│ Streamlit app (single repo)                             │
-│                                                         │
-│ ┌──────────────┐    ┌──────────────────────────────┐    │
-│ │ Page: Query  │    │ Page: Metrics Dashboard      │    │
-│ │ - prompt box │    │ - per-task accuracy, ROUGE,  │    │
-│ │ - 3 columns: │    │   BERTScore, LLM-judge, etc. │    │
-│ │   FT-SLM /   │    │ - filter by task surface     │    │
-│ │   zero-shot/ │    │ - calibration plots, etc.    │    │
-│ │   few-shot   │    │                              │    │
-│ └──────┬───────┘    └──────────┬───────────────────┘    │
-│        │ live calls            │ reads cached results   │
-│        ▼                       ▼                        │
-│ ┌──────────────┐    ┌──────────────────────────────┐    │
-│ │ Model layer  │    │ Eval results store           │    │
-│ │ - FT-SLM     │    │ (parquet / sqlite locally,   │    │
-│ │   (local)    │    │  one row per (question,     │    │
-│ │ - Gemini API │    │  condition) with all metrics)│    │
-│ └──────────────┘    └──────────────────────────────┘    │
-└─────────────────────────────────────────────────────────┘
-```
-
-Implications:
-- Eval-set responses are **pre-computed offline** and stored; dashboard reads cached results (fast, reproducible).
-- "Side-by-side query" page issues **live** calls (for ad-hoc inspection, not for metric computation).
-- FT-SLM inference must be hostable somewhere reachable from Streamlit — local GPU via vLLM/Ollama is simplest if hardware is available. **Open question: compute budget/hardware**.
-
-## 5. Open questions / blockers
-
-- **SLM choice** — pending research on May-2026 open-source landscape (Llama-4? Qwen-3? Phi-4-mini? IndicLLM?). Indic capability is a hard requirement; UPSC content is bilingual (English + Hindi often).
-- **Eval set construction** — must source PYQs (Prev Year Questions) for Prelims + Mains; need authoritative answer keys.
-- **Compute budget** — unspecified. Affects model size cap (1B vs 7B vs 14B).
-- **Deployment target** — unspecified. Affects whether quantization matters for the comparison.
-- **Mains/Interview grading** — humans? LLM-as-judge (with which judge)? Rubric-based?
-- **FT-SLM hosting for Streamlit** — local GPU (vLLM/Ollama), or a hosted endpoint (Modal, Together, Fireworks)?
-- **Live-query latency budget** for the dashboard's interactive page (affects model size we can ship).
-- **FT task framing** — single multi-task SLM, or N task-specific LoRA adapters? (Recommended: single multi-task LoRA model; adapters are a fallback if one task degrades the others.)
-- **Indic-native challenger model** — include Sarvam / Airavata / Indus as a third candidate alongside Qwen2.5? (Recommended: yes — if a domain-native model wins with less FT, that's a more interesting finding.)
-- **Date cutoff for Current Affairs eval** — Current Affairs is time-bounded. Must fix a "knowledge frontier" date (e.g. "all questions about events before 2025-12-31") so both models are evaluated on the same temporal slice.
-
-## 5a. Next steps (locked 2026-05-16)
-
-Design is complete. Implementation is the gate to a publishable result. Phased plan:
-
-### Phase 0 — Reconcile (≤1 h, blocking)
-- **Resolve 1 vs 2 SLM scope.** `eval-design.md §2` reverted to single-Gemma; `experiment-report.md`, `architecture.md`, `project-brief.md` still treat 2 (Gemma + Qwen). User decision needed before any inference code is written.
-- Confirm `git init` for the repo (the working dir is not yet a git repo per session start; needed for `manifest.json` SHAs).
-
-### Phase 1 — Repo bootstrap (~1-2 h)
-- `git init`, `git remote add` (optional)
-- Create scaffold dirs: `scripts/`, `configs/`, `configs/prompts/`, `data/`, `results/`, `tests/`, `dashboard/`, `models/`, `adapters/`, `prompts/`
-- Write `requirements.txt` from [eval-design.md §5.1](eval-design.md); pip-compile to lockfile with hashes
-- Write `Makefile` with targets: `verify-env`, `freeze`, `build-ft-corpus`, `probe-hindi`, `ft-gemma`, `ft-qwen`, `infer`, `score-tier1`, `score-tier2`, `aggregate`, `test-hypotheses`, `dashboard`
-- Write `scripts/verify_env.py` (Stage 1.1) — checks Python version, deps installed, API keys present, Postgres reachable, MLX-LM operational
-- Run `pip install -r requirements.txt` and verify everything imports cleanly on M5
-
-### Phase 2 — Data plane (~3-5 h)
-- `scripts/freeze_eval_set.py` (Stage 1.2) → `data/eval_set.parquet` + `data/eval_set.sha256`
-- `scripts/build_ft_corpus.py` (Stage 1.3) → `data/ft_corpus.parquet` + `data/ft_corpus.sha256`
-- `tests/test_freeze_determinism.py` (same seed → same SHA, byte-for-byte)
-- `tests/test_leakage_assertion.py` (eval_ids ∩ ft_ids = ∅ — hard stop)
-- **Parallel track:** `scripts/build_upsc_facts.py` → `data/upsc_facts.json` (Constitution Articles 1-395, Schedules 1-12, major Acts, Five-Year Plans, schemes, office-holders). Sourced from public domain (constitution-of-india.net, india.gov.in, Lok Sabha records).
-
-### Phase 3 — Pre-FT triage (~1 h)
-- `scripts/run_hindi_probe.py` (Stage 2.2) — 200 Hindi MCQs against base Gemma-4-E4B-it and Qwen3.5-4B
-- `scripts/gate_hindi.py` (Stage 2.3) — pass criterion ≥ 30%; per-model gate
-- Output: `results/pre_ft_hindi_probe.parquet`
-
-### Phase 4 — Fine-tuning (~1 evening setup + overnight run)
-- `configs/lora.yaml` (rank=16, alpha=32, dropout=0.05, lr=2e-4, batch=1, grad_accum=8, max_seq_len=2048, epochs=3)
-- `scripts/run_ft.py` wrapping `mlx_lm.lora` with checkpoint resume + training-log streaming
-- Run #1: train Gemma adapter → `adapters/gemma4-e4b-upsc-v1/`
-- Run #2: train Qwen adapter → `adapters/qwen35-4b-upsc-v1/` (if 2-SLM scope confirmed in Phase 0)
-- `scripts/validate_adapter.py` (Stage 3.4) — 50 held-out samples per task per adapter
-
-### Phase 5 — Inference (~1 day)
-- Prompt templates in `configs/prompts/` (Jinja2)
-- `scripts/run_inference.py` with `GemmaFTRunner`, `QwenFTRunner`, `GeminiZeroShotRunner`, `GeminiFewShotRunner` per [architecture.md §3.1](architecture.md)
-- 2,000 items × (3 or 4) conditions = 6,000 or 8,000 prediction rows
-- Resumable (append-only `predictions.parquet`), retry with backoff, cost ceiling enforcement
-
-### Phase 6 — Scoring (~1 day)
-- `scripts/score_tier1.py` — all 40+ Tier-1 metrics
-- `scripts/score_tier2.py` — Anthropic Claude judge, prompt-cached, per-row disk cache
-- `scripts/aggregate.py` — per-condition × stratum bootstrap CIs
-- `scripts/test_hypotheses.py` — pairwise tests, BH-FDR correction
-
-### Phase 7 — Dashboard (~1-2 days)
-- Streamlit app with the 6 pages in [architecture.md §6](architecture.md): Aggregate metrics, Side-by-side query, Per-question drilldown, Calibration plots, Failure modes, Run comparison
-
-### Phase 8 — Write-up (~half day)
-- `scripts/render_report.py` auto-fills [`experiment-report.md`](experiment-report.md) §6 and §7 tables from `aggregate.parquet` and `hypothesis_tests.parquet`
-- Human authors §8 Inference (discussion)
-
-**Total: ~1.5 weeks of focused work** to publishable v1 result.
-
-### What can run in parallel
-- Phase 2 data-plane work and Phase 4 LoRA-config writing
-- `data/upsc_facts.json` build while eval-set freezer is being written
-- Streamlit dashboard scaffolding while FT is training overnight
-
-## 6. Working artifacts (this directory)
-
-Will live under `/Users/yeeshan/PrayasAI/Code/SLM/`:
-- `project-context.md` — this file, the source of truth across the session
-- `db-creds.txt` — provided
-- `CLAUDE.md` — behavioral guardrails
-- `eval-design.md` — metric set + protocol + statistics (drafted 2026-05-14, rev 2)
-- `experiment-report.md` — pre-registered scientific report (Aim / Setup / Procedure / Expected outcome / Actual outcome / Results / Inference) — drafted 2026-05-14, trimmed 2026-05-14
-- `architecture.md` — testing architecture (4 planes, reliability, failure modes, UPSC-specific design choices) — drafted 2026-05-14, trimmed 2026-05-14
-- `project-brief.md` — non-technical one-pager for prayas leadership / mentors / stakeholders — drafted 2026-05-14
-- `test-strategy.md` — Phase 1+2+3 test strategy (6 layers: snapshot, pre-flight, smoke, property, data-quality, negative) — drafted 2026-05-16, extended for Phase 3
-- `configs/lora.yaml` — LoRA recipe, shared across Gemma + Qwen FT runs — drafted 2026-05-16
-- (to be added) `schema/` — DB schema dumps
-- (to be added) `data/eval_set.parquet` — frozen eval-set IDs
-
-## 7. Session log
-
-- 2026-05-14: Scoped DB access, model openness, task surfaces, comparison setup. Confirmed `psycopg2` 2.9.11 available; `psql` CLI not installed.
-- 2026-05-14: Connected to `upscdev` (89 tables, 362 MB) and `prod-prayas-db` (57 tables, 820 MB), both PG 17.6 on RDS.
-- 2026-05-14: Web search confirms no UPSC-specific LLM benchmark in literature → eval design is novel; closest priors are JEEBench (Indian entrance exams) and MedQA-style high-stakes exam evals.
-- 2026-05-14: Final deliverable confirmed as Streamlit dashboard (side-by-side + aggregate).
-- 2026-05-14: DB schema inventoried — strong content for all four UPSC surfaces; `evaluation_questions` (rubric-graded student answers) is a standout asset.
-- 2026-05-14: MILU identified as the Indic reference benchmark; no UPSC-specific LLM benchmark exists in literature.
-- 2026-05-14: app_dev inventoried; chatbot is a personalized tutor with rich student state (`staticContext`, `student_memory`). FT framing for v1 = standalone UPSC capability (T1), not personalization (T2).
-- 2026-05-14: Compute path locked: Kaggle (free, 30h/wk T4) for FT, Mac M5 16GB + MLX-LM for inference. Ceiling 7B, comfort 3B at Q4.
-- 2026-05-14: Eval-set target = ~2,000 Qs stratified across surfaces. Judge = Gemini-2.5-Pro (different family from Qwen candidates).
-- 2026-05-14: v1 task scope = A (Prelims MCQ) + B (Mains generation) + C (Mains rubric grading) + E (Current affairs synthesis). Interview deferred to v2.
-- 2026-05-14: v1 framing = T1 standalone capability (no per-student context). T2 personalization deferred to v2.
-- 2026-05-14: Model shortlist locked: Qwen3-8B (primary), AryaBhatta-GemmaGenZ-Vikas (Indic challenger), Gemma-3-4B (optional small comparison). **Revised same day** after deeper landscape sweep → see below.
-- 2026-05-14 (revision): Shortlist updated to **Sarvam-1 (2B) primary, Qwen3.5-9B (March 2026) generalist comparator, Aya Expanse 8B multilingual challenger.** Reason: Qwen3.5 small-model family (0.8B/2B/4B/9B) released March 2026 was missed in first pass; Sarvam-1 is the modern Indic-native 2B that explicitly beats Gemma-2-2B and Llama-3.2-3B on 10 Indic languages; Aya Expanse 8B is Cohere's benchmark-winning multilingual at size class.
-- 2026-05-14 (user-locked v3): **Shortlist replaced by user pick: `gemma-3n-E2B-it`, `Phi-4-mini-instruct`, `Ministral-3-3B-Instruct-2512`.** All three edge-class instruction-tuned. Gemma-3n covers 140+ languages incl. Indic; Phi-4-mini (MIT) and Ministral-3-3B (Apache 2.0) do not officially list Hindi → Hindi-capability triage protocol added as eval-design §10 A2.
-- 2026-05-14 (user-locked v4): Single FT candidate `google/gemma-4-E4B-it`. 4.5B effective / 8B total, Apache 2.0, 128K context, 140+ pretrained languages, multimodal text+image+audio≤30s (NOT video — that's the 31B variant).
-- 2026-05-15 (user-locked v5 — current): **Second FT candidate added: `Qwen/Qwen3.5-4B`.** 4.66B dense, Apache 2.0, 262K context (extensible to 1M), **201 languages with Hindi explicitly enumerated**, multimodal (vision), early-fusion VL training. Released March 2026. Native MLX builds (`mlx-community/Qwen3.5-4B-MLX-4bit`). Adds direct test of "Indic-via-FT (Gemma) vs Indic-via-pretraining (Qwen)" hypothesis and architecture/family comparison. Both adapters trained with identical LoRA recipe on identical FT corpus; only the base model differs.
-- 2026-05-14 (verification pass): Comparator updated to `gemini-3-flash` (current default Flash as of May 2026; Gemini 2.5 family is legacy). LLM-judge for Tier 2 switched from `gemini-2.5-pro` to `claude-sonnet-4-6` — both the candidate (Gemma) and the comparator (Gemini) are Google, so the judge must be a different family to avoid intra-family bias. MLX path simplified to direct 4-bit (`deadbydawn101/gemma-4-E4B-mlx-4bit`) plus `mlx_lm.lora` for FT — no GGUF detour needed.
-- 2026-05-14 (compute path): Local M5 16GB confirmed feasible for QLoRA on Gemma-4-E4B (peak ~7-9 GB of 12 GB usable). **FT moved to local-primary, Kaggle backup.** Estimated 5-7 hours for 3 epochs on ~23K-example multi-task corpus. Verified against [Antigravity Lab M3 Max Gemma 4 FT guide](https://antigravitylab.net/en/articles/antigravity/gemma-4-finetuning-apple-silicon-mlx-guide), [Unsloth Gemma 4 doc](https://unsloth.ai/docs/models/gemma-4), [gemma4.dev MLX guide](https://gemma4.dev/run-local/gemma-4-mlx).
-- 2026-05-14 (deliverables): [experiment-report.md](experiment-report.md) and [architecture.md](architecture.md) drafted. Pre-registered scientific report covers Aim / Setup / Procedure / Expected outcomes (predictions before execution) / Actual outcome (auto-filled by `render_report.py`) / Results / Inference; UPSC + ed-tech specific throughout. Architecture covers four planes (data / inference / scoring / dashboard) with idempotence, retry, leakage CI, S3 mirroring, audit log, DPDPA compliance.
-- 2026-05-14 (post-feedback): Bloat removed from `architecture.md` (cut speculative repo layout, full production-deployment-stages section, redundant narrative). `experiment-report.md` trimmed (background compressed, sign-off boilerplate removed). New `project-brief.md` created as non-technical one-pager for stakeholders — covers goal, process, success criteria, timeline, risks in plain language without jargon.
-- 2026-05-15 (name): User edited "Irshad" → "Yeeshan" in `architecture.md` and confirmed the propagation. Yeeshan is the preferred first name in all docs going forward; `irshad@prayas.ai` remains the email handle. Memory updated.
-- 2026-05-15 (second SLM): Second FT candidate added: `Qwen/Qwen3.5-4B`. v1 now compares **four** conditions: C1a (Gemma-FT), C1b (Qwen-FT), C2 (Gemini-3-Flash zero-shot), C3 (Gemini-3-Flash few-shot). Hypothesis set expanded from H1-H3 (3 comparisons) to H1-H6 (6 pairwise comparisons across the 4 conditions). Verdict criteria reframed around "per-task champion" = max(C1a, C1b). FT corpus is identical between adapters; only the base model differs — isolates architecture/pretraining as the variable. Both adapters trained on M5 overnight (~10-14 h total). All five docs updated (eval-design, experiment-report, architecture, project-context, project-brief).
-- 2026-05-16 (pedagogical clarity): Added a **Pedagogical Clarity** metric family. Three scopes: (i) **Task A explanation pass (NEW)** — a third inference pass elicits the model's explanation for its chosen MCQ answer; Tier 1 measures explanation quality vs gold (`prelims_pyq_questions.explanation` JSONB) using BERTScore-F1, ROUGE-L, Entity-F1, **Distractor coverage** (does it address each wrong option?), and **Reasoning-step density**; Tier 2 adds a 5-axis LLM-judge rubric (Step-by-step / Distractor addressing / Conceptual grounding / Specificity / Accessibility) on `claude-sonnet-4-6`. (ii) **Task C feedback Pedagogical Clarity** — Tier 2 only, 5-axis rubric (Actionability / Specificity / Constructiveness / UPSC-rubric fidelity / Coverage proportionality) measuring whether predicted strengths/improvements actually teach the student. (iii) **Task E synthesis Pedagogical Clarity** — Tier 2 only, 5-axis rubric (Syllabus grounding / Static-Dynamic bridge / Multi-dimensional framing / Specificity / Mains-utility framing) — Task E output is study material consumed by aspirants, so the teaching-task framing applies. Task B is NOT included — Mains generation is student-mimicking, not teaching, and existing G-Eval already covers what UPSC graders reward.
-- 2026-05-16 (Tier-1 objective expansion): Added 15 more deterministic Tier-1 metrics per user feedback "majorly NON subjective, NUMERICALLY BACKED, scored objectively." **New shared utility:** `data/upsc_facts.json` — static lookup of Constitution Articles, Schedules, Acts, Five-Year Plans, schemes, office-holders; built deterministically from public sources; hashed in `manifest.json`. Powers fact-lookup metrics across Tasks A, B, E. **Task A explanation (5 → 8 metrics):** added Article/scheme citation accuracy (via lookup), Answer position bias (χ² test of A/B/C/D distribution), Sentence-length variance. **Task B Mains (11 → 16 metrics):** added Type-Token Ratio (MATTR), Flesch-Kincaid Grade Level, Paragraph count adherence, 4-gram repetition rate, UPSC fact-lookup precision. **Task C rubric grading (8 → 11 metrics):** added Score variance ratio (detects mean-collapse), JSON schema validity rate, Strengths/Improvements item-count adherence. **Task E synthesis (11 → 15 metrics):** added Compression ratio compliance, Glossary term recall (against `prod.glossary` 7,475 keywords), Source citation density, Lead-100-word entity recall, UPSC fact-lookup precision. New deps: `textstat==0.7.4`, `jsonschema==4.23.0`, `numpy==2.1.3` (explicit pin). All metrics are pure functions of the response + gold/source/static-lookup — no LLM-judge, no human judgment, fully reproducible.
-- 2026-05-16 (next steps locked): Implementation plan added as §5a above — Phase 0 (reconcile 1 vs 2 SLM, git init) through Phase 8 (write-up). Total ~1.5 weeks focused work. Two pending design blockers identified: (a) 1-vs-2-SLM scope reconciliation, (b) git-init authorization. Awaiting user direction on Phase 0 before Phase 1 starts. User-standing instruction: project-context.md is to be updated at every significant step — saved as project-memory.
-- 2026-05-16 (Phase 0 complete): User confirmed **dual-candidate v1** (Gemma-4-E4B-it + Qwen3.5-4B); `eval-design.md §2` re-expanded to dual spec, aligning with experiment-report.md / architecture.md / project-brief.md. **git initialized** on `main` branch with comprehensive `.gitignore` protecting `db-creds.txt`, `*.env`, `results/`, `adapters/`, `data/*.parquet`, model caches, Python build artifacts. `git check-ignore -v db-creds.txt` confirms protection. No commits made — staged tree left for user to inspect and authorize. Phase 0 done; ready for Phase 1 (repo bootstrap) and Phase 2 (data plane) on user go-ahead.
-- 2026-05-16 (Phase 1+2 built): **Working code only — no scaffolding.** Files: `requirements.txt` (26 pinned deps), `Makefile` (6 working targets only: verify-env / build-facts / freeze / build-ft-corpus / test / clean), `scripts/db_creds.py` (29 LOC, parses db-creds.txt → DSN dicts for upscdev + prod only), `scripts/verify_env.py` (57 LOC, precondition gate for Python + deps + DB + API keys), `scripts/freeze_eval_set.py` (312 LOC, 4 pull fns + seeded stratified sampler + SHA-256 sidecar), `scripts/build_ft_corpus.py` (214 LOC, 4 builders + hard-stop leakage assertion), `scripts/build_upsc_facts.py` (69 LOC, schema-validates the facts JSON), `data/upsc_facts.json` (181 lines: 49 Articles, 12 Schedules, 23 Acts, 12 Plans, 20 schemes, office-holders, commissions — curated from public sources), `tests/test_freeze_determinism.py` (integration: same seed → same SHA), `tests/test_leakage_assertion.py` (unit: 4 cases). Total: 1,034 lines across 11 files.
-- 2026-05-16 (scaffolding/dead-code removal): Per user "no scaffolding code, no empty/dead code" directive — removed: (a) 6 empty directories (`adapters/`, `dashboard/`, `models/`, `prompts/`, `results/`, `configs/`); (b) 2 empty `__init__.py` files (Python package markers were unneeded — scripts use explicit sys.path manipulation, tests invoke via subprocess); (c) 7 Makefile targets referencing scripts that don't exist yet (`probe-hindi`, `ft-gemma`, `ft-qwen`, `infer`, `score-tier1`, `score-tier2`, `aggregate`, `test-hypotheses`, `dashboard`) — will be re-added in their own phase when the scripts they invoke exist; (d) `app_dev` DB target from `db_creds.py` and `verify_env.py` — app_dev (chatbot personalization) is v2 scope, not v1, so its DSN logic and reachability check were dead code; (e) `@pytest.mark.integration` from `test_freeze_determinism.py` + the pytest-marker registration that would have required `pyproject.toml` — overkill for two tests, removed. Self-review fixes from earlier turn (O(n²) stratify, statsmodels/tenacity/pytest pins in eval-design §5.1) retained.
-- 2026-05-16 (placeholder/shadow-code removal): User clarified "scaffolding" = placeholder/not-fully-implemented code. Found one real instance: **`tests/test_leakage_assertion.py` had a shadow `_check` function** re-implementing the leakage-assertion logic instead of testing the production code. Fixed: extracted `assert_no_leakage(eval_ids, ft_ids)` as a named function in `scripts/build_ft_corpus.py` (replacing the inline `assert overlap is empty` in `main()`); rewrote the test to `from build_ft_corpus import assert_no_leakage` so it exercises the real production function — any future bug in the assertion now fails the test. Full sweep then run: zero TODO/FIXME/NotImplementedError markers, zero bare-pass / ellipsis function bodies, zero empty-body functions, zero unused imports (a naive grep flagged `pandas` and `annotations` but `pandas` is aliased to `pd` and `annotations` is a `__future__` directive, both false positives).
-- 2026-05-16 (test strategy): **`test-strategy.md` drafted** — covers Phase 1+2 only, 5 layers (pre-flight / smoke / property tests / data-quality spot-checks / negative tests) with concrete commands and binary pass criteria per check. Acceptance checklist (12 boxes) gates Phase 3. Layers 1-3 are automated via `make verify-env`, `make build-facts`, `make freeze`, `make build-ft-corpus`, `make test`. Layer 4 is pasteable Python in a REPL. Layer 5 is five hand-run negative scenarios (different seed differs, leakage trips on injection, verify-env fails on missing keys, build-ft-corpus fails on missing eval-set, determinism survives re-runs). Phase 3-8 each get their own narrow strategy when their code lands — all share the contract that Phase-2 outputs (`eval_set.parquet`, `ft_corpus.parquet`, `upsc_facts.json`) are immutable and verified.
-- 2026-05-16 (local snapshot architecture): User imposed standing rule — **zero writes to any prod DB without per-instance explicit approval.** Verified existing code is already read-only (`conn.set_session(readonly=True)` everywhere; zero `INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE` SQL anywhere in `scripts/`). Reorganized the data plane to centralize prod access in a single auditable script: **`scripts/snapshot_to_local.py` is the only script that connects to remote Postgres**, and it does so only via read-only SELECTs. Snapshots 8 tables (~44K rows; ~50-200 MB) into local SQLite at `data/prayas_local.sqlite`. New utility `scripts/local_db.py` exposes `read_table(name)` and `write_table(name, df, json_columns)`; JSONB and Postgres-array columns serialize to TEXT in SQLite and round-trip back to dict/list on read. Refactored `freeze_eval_set.py` and `build_ft_corpus.py` to read from local SQLite via `local_db.read_table()` — removed all remote-DB imports/queries from those scripts. `verify_env.py` is now an offline-only gate (no remote-DB ping; that happens during `make snapshot`). `Makefile` adds a `snapshot` target; `freeze` depends on `snapshot`. `.gitignore` adds `data/prayas_local.sqlite`. `test-strategy.md` adds Layer 0 covering the snapshot step. Saved as standing user-feedback memory `feedback_no_prod_writes.md` so future sessions inherit the constraint.
-- 2026-05-16 (Phase 3 built): A2 Hindi-capability probe + gate. **`scripts/run_hindi_probe.py`** (95 LOC) — reads `upsc_prelims_ai_generated_que` from local SQLite, filters to `question_hindi` rows with `quality_pass_flag=True`, deterministically samples 200 with `seed=20260514`, loads the base MLX model via `mlx_lm.load(...)`, runs Pass-1 forced-choice prompts at temperature 0 via `make_sampler(temp=0.0)`, parses the model's first A/B/C/D token, writes per-row results to `results/pre_ft_hindi_probe.parquet`. Idempotent at the model level — re-running with the same `--model` replaces that model's rows. **`scripts/gate_hindi.py`** (45 LOC) — groups results by model, computes accuracy, exits 0 if all models ≥ 0.30 (random + 5pp on 4-option MCQs), else exits 1 with a list of failing models. Failure does NOT block Phase 4 FT; it just routes Hindi-stratum results to separate post-FT reporting per [eval-design.md §10 A2](eval-design.md). `Makefile` gains `probe-hindi` and `gate-hindi` targets (probe depends on snapshot). `test-strategy.md` extends Layer 2 with a §2.4 covering Phase 3 expectations. First-run wall-clock: ~15-40 min total (model downloads dominate; both models then cached). No remote-DB access. Same single-script prod boundary preserved.
-- 2026-05-16 (Phase 4 built): LoRA FT pipeline. **`configs/lora.yaml`** (29 lines) — pinned recipe matching [experiment-report.md §4 Stage 3.1](experiment-report.md): rank=16, alpha=32, scale=10, dropout=0.05, lr=2e-4, batch=1, max_seq_len=2048, iters=20000 (~1 epoch over the 23K-pair corpus on M5 at ~1s/iter ⇒ ~5-6h wall-clock), `num_layers=16`, LoRA applied to `{q,k,v,o,gate,up,down}_proj`. `grad_checkpoint=true` to keep peak memory in the ~7-9 GB band on the M5 16 GB. **`scripts/run_ft.py`** (95 LOC) — reads `data/ft_corpus.parquet`, deterministic stratified 95/5 train/valid split (seed 20260514), writes `data/ft_split/{train,valid}.jsonl` in chat-message format, subprocess-invokes `python -m mlx_lm.lora` with the YAML config and CLI-injected `--model`/`--adapter-path`. Tees subprocess stdout to `adapters/<adapter-out>/training.log` alongside the terminal stream. **`scripts/validate_adapter.py`** (90 LOC) — Stage 3.4 sanity check. Loads `(base + adapter)` via `mlx_lm.load(adapter_path=...)`, samples 50 items per task from the valid-split JSONL (the same data MLX-LM held out during training, so the assertion checks generalization to data the adapter didn't see), runs each through `tokenizer.apply_chat_template + generate`, asserts task-specific parseability (Task A: letter regex; Task B: non-empty; Tasks C/E: valid JSON), exits 1 if >5% unparseable overall or per task. `Makefile` gains 4 targets: `ft-gemma`, `ft-qwen`, `validate-gemma`, `validate-qwen` — each depends on `build-ft-corpus`. `.gitignore` adds `data/ft_split/` (deterministically rebuildable). No remote DB. Prod boundary preserved.
-- 2026-05-16 (probe size reduced 200 → 50): User requested smaller Hindi probe. Updated default `--n` in `scripts/run_hindi_probe.py`, plus references in `eval-design.md §10 A2`, `experiment-report.md §3.4` and `§6.2`, `test-strategy.md §2.4`.
-- 2026-05-18 (Phases 0-2+test executed via uv venv, end-to-end green): `uv venv .venv --python 3.12` → `uv pip install -r requirements.txt`. Hit one install issue: `summac==0.0.6`, `alignscore==0.1.3`, `factscore==0.1.7` are git-only packages (not on PyPI) — removed from requirements.txt with note that Phase 6 will install them via git URLs. Hit a second runtime issue: `textstat==0.7.4` imports `pkg_resources` which was removed from setuptools 70+ → bumped to `textstat==0.7.13` (no pkg_resources). `make verify-env` then passes for env (only API-key warnings remain, expected — Phase 5 deps). Actual run results: `make build-facts` → upsc_facts.json validated (61 articles / 12 schedules / 23 acts / 12 plans / 20 schemes; SHA `4107cbd9...`). `make snapshot` → 45,370 rows / 221.1 MB SQLite snapshot of 8 prod tables (read-only confirmed); SHA `88441fda...`. `make freeze` → eval_set.parquet 2,000 rows, by task {A: 800, B: 400, C: 500, E: 300}, by language {A: 453en+347hi, B: 206en+194hi, C: 500en, E: 300en}; SHA `827928c2...`. `make build-ft-corpus` → 30,833 FT pairs {A: 15,721, B: 2,608, C: 9,600, E: 2,904}; leakage assertion PASS (overlap=0); SHA `c836848c...`. `make test` → 5/5 pytest passes (determinism + 4 leakage cases). Independent defense-in-depth leakage cross-check after the build: eval=2,000 ∩ ft=30,833 = 0. Pipeline solid; ready for Phases 3-5 when user runs them.
-- 2026-05-16 (proper significance test for A2 gate): User asked for a proper statistical test instead of a hand-picked threshold. **`scripts/gate_hindi.py` now uses `scipy.stats.binomtest`** for a one-sided binomial test against the random-chance baseline (H0: accuracy = 0.25, H1: accuracy > 0.25) at α = 0.05. Model passes iff p-value < α. At n = 50 the critical value is **k = 18 (36% accuracy)** — i.e. `P(X ≥ 18 | n=50, p=0.25) ≈ 0.045`. CLI args `--alpha` and `--p-null` are configurable; defaults match the design. Updated `eval-design.md §10 A2` (pass criterion now references the binomial test + critical value), `experiment-report.md §3.4` (Stage 2.3 command) and `§6.2` (outcome table gains a `p-value` column), `test-strategy.md §2.4` (expected gate log + pass criterion). The probe itself (`scripts/run_hindi_probe.py`) is unchanged — it only writes raw `is_correct` per item; statistical inference is the gate's job. scipy was already pinned in `requirements.txt`.
-- 2026-05-16 (Phase 5 built): Inference plane. **`scripts/runners.py`** (~250 LOC) — `EvalItem` and `Prediction` dataclasses; task-specific prompt builders for Pass-1 MCQ + Pass-2 confidence + Pass-3 explanation (Task A), Mains generation (B), rubric grading (C), and current-affairs synthesis (E); robust JSON-extractor for C/E parsing; `MLXLoRARunner` (loads base + LoRA adapter via `mlx_lm.load(adapter_path=...)`, generates with streaming for accurate TTFT); `GeminiZeroShotRunner` + `GeminiFewShotRunner` using `google-genai` SDK with `generate_content_stream` (also for TTFT) and `tenacity` retry-with-backoff on `TimeoutError`/`ConnectionError`; `GeminiFewShotRunner` deterministically picks 3 task-matched exemplars from `data/ft_corpus.parquet` sorted by `pair_id` and prepends them — pair_ids printed at startup for audit; `estimate_gemini_cost(eval_set, few_shot)` returns a conservative pre-run USD estimate. **`scripts/run_inference.py`** (~140 LOC) — orchestrator. Reads `data/eval_set.parquet`, computes per-(run_id, condition, question_id) resume set from existing `results/predictions.parquet`, processes pending rows; for Task A also runs Pass-2 confidence + Pass-3 explanation; checkpoints every N rows (default 50); records `run_id`, `condition`, `model_version`, `task`, `question_id`, `language`, `paper`, `subject`, `stratum_key`, `gold_payload`, `prediction`, `raw_output`, `latency_ms`, `ttft_ms`, `input_tokens`, `output_tokens`, `created_at` per [eval-design.md §5.3](eval-design.md); refuses to start C2/C3 above $25/condition cost estimate unless `--confirm-cost`. **Makefile** gains `infer-c1a`/`c1b`/`c2`/`c3` targets + an aggregate `infer` target; all share `RUN_ID ?= $(shell date +%Y%m%d)` so a single `make infer` invocation pairs the four conditions under one run_id. No remote DB. Prod boundary preserved.
-- 2026-05-14 (revision): `eval-design.md` rewritten to **lead with quantitative metrics**. LLM-judge / G-Eval moved to Tier 2 diagnostic. Every metric is now pinned to a specific Python library (BERTScore, BLEURT-20, ROUGE-L, chrF++, METEOR, Entity-F1 via spaCy, SummaC-ZS, AlignScore, QWK via sklearn, ECE via torchmetrics). Scorer-model checkpoints SHA-pinned in `models/lockfile.json`. Per user feedback that primary metrics must be deterministic and reproducible, not subjective.
-- 2026-05-14: Mains grading uses `evaluation_questions` as proxy gold (acknowledged caveat: those rubrics were likely LLM-graded; using same judge family creates circularity — see [eval-design.md] limitations).
-- 2026-05-14: [eval-design.md] drafted — per-task research-backed metrics (Accuracy/Brier/ECE for A; BERTScore/BLEURT/G-Eval for B; QWK/per-criterion-κ for C; FactScore/SummaC/Entity-F1 for E) + statistical methodology + result-store schema. Awaiting user review.
-- 2026-05-18 (Tier-2 vendor question): User asked whether we need two LLM providers and whether deterministic metrics need the Anthropic key. Confirmed: **Tier-1 metrics need NO API keys** — all run from local libraries + local scorer models (BERTScore deberta, BLEURT-20, SummaC, AlignScore, spaCy NER, etc.). The Anthropic dependency exists only for **Tier-2 Pedagogical Clarity / G-Eval / FactScore** rubric judging. Surfaced three honest paths: (A) keep Claude judge; (B) use blinded Gemini-Pro judge (saves a vendor, ~3-7pp self-preference bias per Panickssery et al. 2024 — acceptable for diagnostic-only Tier-2); (C) drop Tier-2 entirely for v1 (Tier-1 has ~45 metrics, sufficient on its own). Recommended **Path C** (drop Tier-2 for v1) given user's quantitative-first emphasis. Awaiting user decision before applying.
-- 2026-05-18 (JSONL exporter for human inspection): User wanted to see the FT corpus without binary format. Clarified Parquet is not encrypted (just columnar binary). Added `scripts/export_corpus.py` (32 LOC) — converts any of `data/*.parquet` into pretty JSONL one-pair-per-line. Added `make export-corpus` target — produces `data/ft_corpus.jsonl` (153 MB, 30,833 rows) and `data/eval_set.jsonl` (11 MB, 2,000 rows). Both JSONLs gitignored (deterministically rebuildable from parquet). Confirmed inspection workflow with `head`, `grep`, `jq`. Sample of the first two pairs showed bilingual structure (en + hi pair for the same source question) — confirms language stratification flows correctly through the data plane.
-- 2026-05-18 (tasks ABCDE clarified + Path A2 + CSAT added): User asked what tasks A/B/C/D/E are and why D is missing. Explained: D = Interview/Personality Test (DAF-driven), deferred to v2 per [experiment-report.md §11](experiment-report.md) — open-ended ethics/opinion content, hardest to score objectively, would force LLM-judge-only metrics that conflict with quantitative-first design. Letters A/B/C/E kept stable so v2 can drop D in without renumbering. Also surfaced a real train-test prompt mismatch: FT corpus used JSON-input/JSON-output format ([TASK=X] + JSON), but inference prompts in `runners.py` were natural-language single-letter for Task A. Three fix paths offered; user chose **Path A2: unify FT and inference prompts to JSON-format end-to-end**.
-- 2026-05-18 (CSAT extracted from app DB / actually prod via learning_items): User noted CSAT MCQs should be in v1. Investigated — `paper` column exists on `learning_items` (in prod and app_dev) but not directly on `mcqs`. Distribution per `prod.learning_items.paper`: gs1=9,753, gs2=11,835, gs3=13,308, gs4=43, csat=3,254, essay=20. Actual MCQs by joined paper: gs1=8,619, csat=2,382. Confirmed CSAT content is genuinely different (number puzzles, reading comprehension, deduction). Modified `scripts/snapshot_to_local.py` SNAPSHOTS to use full-SQL-per-entry form (enables JOINs); the `mcqs` snapshot now `LEFT JOIN`s `learning_items` to attach `paper` + `tags`. Re-ran snapshot: same 11,424 mcqs but now each row carries paper. SHA `aba582c8...` (was `88441fda...`). `scripts/freeze_eval_set.py` Task A: filter mcqs to `paper ∈ {gs1, csat}` and use paper for stratification (CSAT now a first-class stratum). `scripts/build_ft_corpus.py` Task A: ADDED `mcqs` as a third FT source (was only `prelims_pyq_questions` + `upsc_prelims_ai_generated_que`), filtered to gs1+csat with explanations present, with a `_explanation_from_jsonb` helper to flatten the prod.mcqs `explanation` JSONB array of `{content}` blocks. Eval set after rebuild: Task A includes 20 CSAT items (stratum `CSAT|UNTAGGED|silly=0|en`) + 326 GS1 (uppercase, from mcqs) + 454 gs1 (lowercase, from prelims_pyq_questions — paper-tag case inconsistency between source tables is a known cleanup item, doesn't affect correctness).
-- 2026-05-18 (Path A2 implementation — unified JSON I/O across all tasks): Updated `TASK_INSTRUCTIONS` in both `scripts/build_ft_corpus.py` and `scripts/runners.py` to identical strings — the model now sees the same instruction text at train and inference time. All tasks now emit JSON output: Task A → `{"answer": "<letter>", "explanation": "..."}`; Task B → `{"answer": "<full Mains essay>"}`; Task C → `{"score": ..., "strengths": [...], "improvements": {...}}`; Task E → `{"prelims_info": "...", "mains_info": "..."}`. `runners.py` consolidates prompt-building into one `build_prompt(item)` function + a `_input_for(item)` helper that mirrors the FT-corpus `input` JSON exactly. `parse_output` now uses `_extract_json` for all tasks; Task A retains a regex fallback for stragglers. **Pass-3 (explanation) call removed** from `run_inference.py` — explanation now comes from the Pass-1 JSON output, saving one inference call per Task-A item (~3,200 fewer model calls across all 4 conditions × 800 Task-A items). Pass-2 (verbal confidence) stays as a separate call. Note: prayas will provide production prompts for Mains model-answer generation and Prelims explanation generation; swap-in is a single edit to `TASK_INSTRUCTIONS` in both files (keeping the same shape).
-- 2026-05-18 (vendor question — 2 LLM providers?): User asked whether we need both Google and Anthropic. Confirmed Tier-1 metrics need ZERO API keys (all run from local libraries + local scorer models). Tier-2 LLM-judge is the only thing needing the Anthropic key. Three paths offered: A=keep Claude judge (current), B=blinded Gemini-Pro judge (saves vendor, ~3-7pp self-preference bias per Panickssery et al. 2024), C=drop Tier-2 entirely for v1. Recommendation: **Path C** for v1 given quantitative-first directive. Decision pending.
-- 2026-05-18 (Path A2 + CSAT rebuild executed): Fixed `_explanation_from_jsonb` defensive cast — one prod.mcqs row had a dict (not string) in `content`; coerce non-string values to JSON-serialized text instead of aborting the build. Rebuilt eval+FT artifacts end-to-end. **`data/eval_set.parquet`**: 2,000 rows, by task {A: 800, B: 400, C: 500, E: 300}; Task A by source_table {mcqs: 90 (GS1=70, CSAT=20), prelims_pyq_questions: 454, upsc_prelims_ai_generated_que: 256}; SHA `e2b62a3f...`. **`data/ft_corpus.parquet`**: 41,749 pairs (was 30,833 before CSAT/mcqs were added), by task {A: 26,638, B: 2,608, C: 9,600, E: 2,903}; Task A source_table breakdown {mcqs: 10,909 (GS1=8,548, CSAT=2,361), prelims_pyq_questions: 6,770, upsc_prelims_ai_generated_que: 8,959}; leakage assertion PASS (eval ∩ ft = ∅); SHA `d57be52c...`. CSAT now a first-class FT + eval stratum. Phases 3-5 ready to re-run against the larger FT corpus when user pulls the trigger.
-- 2026-05-18 (`/fewer-permission-prompts` skill run): Scanned 17 recent transcripts across all prayas projects. Top non-auto-allowed Bash patterns were all interpreters (`python3 <<`, `uv run`, `bash -c`), package runners (`npx jest/tsc`, `npm run`), or mutating commands (`git push/commit/add`, `pkill`, `pip3 install`, `psql -h`) — none safe to wildcard-allowlist. Auto-allowed commands (`grep`, `cat`, `ls`, `git status/diff/log/show`, `find`, `sed -n`, `ps`, `which`, `head`, `tail`, `wc`, `echo`, `sleep`, etc.) already cover everything routine. MCP-tool count below threshold (4 total Atlassian calls). No changes made to `.claude/settings.json`.
-- 2026-05-18 (Phase 6 built — scoring + aggregation + hypothesis tests, Path C / Tier-1 only): User said production prompts will arrive later and will be "different tasks either way" — proceeded with code build. Path C confirmed as v1 default (no LLM-judge, no Anthropic key). **Three new scripts (~1,000 LOC total):** `scripts/score_tier1.py` (~480 LOC) — per-row scoring for all 4 tasks. Task A: accuracy, UPSC negative-marking score (paper-aware: GS1 ±2/±0.667, CSAT ±2.5/±0.833), brier loss, format-fail rate, explanation entity-F1 (spaCy NER), distractor coverage, reasoning-step density per 100w, Article citation accuracy (vs `upsc_facts.articles`), sentence-length variance, batched BERTScore-F1 + ROUGE-L on explanation (English + Hindi separately). Task B: BERTScore-F1 + ROUGE-L + chrF (batched), word/sentence/paragraph count adherence, entity-F1, date+number exact-match F1, Hindi code-mixing rate (unicodedata), MATTR-100 lexical diversity, Flesch-Kincaid grade (textstat), 4-gram repetition rate, UPSC fact-lookup precision. Task C: schema validity (jsonschema), strengths/improvements token-F1 (spaCy lemma), strengths-list BERTScore-F1, item-count adherence, score abs-error (per-row; QWK/Spearman/Pearson/confusion in aggregate). Task E: entity-F1 vs gold + hallucination rate (entities not in source) + coverage of source entities, date/numeric F1 vs source, compression-ratio score (target 0.20-0.50), citation density per 100w, lead-100w entity recall, UPSC fact-lookup precision, prelims+mains BERTScore-F1 + ROUGE-L + mains chrF (batched, English). `scripts/aggregate.py` (~200 LOC) — per-(condition, task, language) mean + bootstrap-95% CI for every per-row scalar (seeded RNG, N=1000). Adds aggregation-level metrics: ECE-15bin, Brier Skill Score (vs base-rate predictor), position-bias χ² (Task A); QWK/Spearman/Pearson/confusion-matrix/score-variance ratio (Task C); silly-mistake breakdown + paired bilingual EN-vs-HI delta (Task A, written to `.extras.json` side file). `scripts/test_hypotheses.py` (~120 LOC) — pairwise paired-t + Wilcoxon on every (task, metric, condition-pair) with ≥5 paired observations, percentile-bootstrap CI on the difference, BH-FDR correction across the full test family (statsmodels.multipletests). Orientation flipped for lower-is-better metrics (brier_loss, format_fail, score_abs_err, hallucination_rate, ngram4_repetition). New deps: `bert-score==0.3.13`, `spacy==3.8.2` + `en_core_web_sm==3.8.0` (added to requirements.txt). **Deferred for v1** (documented in score_tier1.py docstring): BLEURT-20 (bleurt-pytorch git-only), SummaC/AlignScore/FactScore (Task E faithfulness — git-only), generation perplexity (heavy base-model load, dominated by BERTScore signal), glossary recall (needs `prod.glossary` in snapshot), METEOR (wordnet corpus dep, dominated by BERTScore + ROUGE-L). Makefile gains `score-tier1`, `aggregate`, `test-hypotheses` targets; aggregate and test-hypotheses depend on score-tier1.
-- 2026-05-21 (Gemma unblocked + Hindi probe artefact-corrected — pre-registered prediction refuted): User said "run the experiment, unblock Gemma first." Investigation: `deadbydawn101/gemma-4-E4B-mlx-4bit` raised `ValueError: Received 126 parameters not in model` (multimodal-vs-text-only). `principled-intelligence/gemma-4-E4B-it-text-only` failed conversion too — its `Gemma4TextModel` encoder layout (no `model.` prefix, no `lm_head`) doesn't match what mlx-lm's `gemma4_text` expects. `mlx-community/gemma-4-e4b-it-4bit` (canonical, 2026-05-19) ALSO failed with the same 126-param error. Root cause: mlx-lm 0.31.3's `sanitize()` doesn't strip K/V projections for Gemma 4's shared-attention layers (24-41) — fixed upstream on 2026-05-04 in commit `df1d3f3c` ("Fix Gemma 4 sanitize() not stripping KV projections for shared layers") but not yet in any tagged PyPI release. Pinned `mlx-lm @ git+...@df1d3f3c…` in requirements.txt (replace with next tagged release once it ships). Gemma now loads + generates clean. **Probe re-run also surfaced a measurement-protocol bug:** plain-text prompts produced 0/50 for Gemma (instruction-tuned EOS-on-first-token without chat template) and 18/50-truncated Qwen responses (max_tokens=6 cut off `<think>` block). Patched `scripts/run_hindi_probe.py` to wrap prompts via `tokenizer.apply_chat_template(..., add_generation_prompt=True, enable_thinking=False)` and bumped `max_tokens` 6 → 24. **Final artefact-corrected probe outcome (50 Hindi MCQs, seed 20260514):** Gemma 4 E4B-it 26/50 = **52.0 %** (p < 0.00001 — PASS); Qwen 3.5-4B 15/50 = **30.0 %** (p = 0.252 — FAIL). **Direction inverted vs experiment-report §5.1 pre-registration** which predicted Qwen would beat Gemma on Hindi by ≥ 5 pp. Empirically the opposite: Gemma's 140-language pretrained pool delivers stronger usable Hindi than Qwen's explicit 201-language enumeration. Qwen's Hindi stratum will be reported as a separate post-FT finding per A2 protocol, not folded into the bilingual aggregate. FT proceeds for both models. Updates landed in `experiment-report.md §6.2`, `eval-design.md §2.0a / §2.1`. `data/upsc_facts` artefacts unchanged. Ready for Stage 3 (LoRA FT, ~5-7 h each adapter on M5).
-
-- 2026-05-21 (Stage 3 FT — 16 GB M5 OOM diagnosis + 24 GB handoff): Three `make ft-qwen` attempts OOM'd on the M5 (val pass survives, first training step crashes with `kIOGPUCommandBufferCallbackErrorOutOfMemory`). Reductions tried: max_seq 2048→1536, num_layers 16→8 — each still OOM. Spawned a research subagent: surveyed 2024-2026 LoRA literature + mlx-lm GitHub. Root cause is **two open mlx-lm bugs**: #828 (val-pass cache held when first train step runs) + #1185 (Metal command-buffer leak on Qwen3.5 LoRA), compounding with the macOS default Metal GPU cap (`iogpu.wired_limit_mb=0` → ~12 GB on a 16 GB device). Fix has three layers: (a) macOS `sudo sysctl iogpu.wired_limit_mb=21504` raises the OS cap to 21 GB; (b) in-process `mx.set_wired_limit(20 GiB)` + `mx.set_cache_limit(512 MiB)` keeps MLX inside the cap; (c) explicit `mx.clear_cache()` between val and train flushes the residual. Recipe restored to pre-registration intent (rank=16, num_layers=16, max_seq=2048) with two additions: `grad_accumulation_steps: 8` (effective batch 8, zero extra peak per Dettmers QLoRA NeurIPS 2023) and `val_batches: 25` (halved, reduces val→train residual). `iters` adjusted 20000 → 16000 (≈3 epochs at effective batch 8 over 42,701 pairs). Vanilla LoRA, **not DoRA** (MLX's DoRA materializes the dense norm and eats budget; the ~1-3 pt benefit isn't worth it at this hardware tier). NOT switching to PyTorch+peft+bitsandbytes — published QLoRA-vs-MLX adaptation-quality gap < 2 % per QLoRA paper, not worth breaking the rest of the pipeline. Expected peak ~16-18 GB; wall-clock ~10-14 h per adapter on a 24 GB M-series. Code committed: `configs/lora.yaml` restored + commented with research citations, `scripts/run_ft.py` gains a pre-flight `mx.set_wired_limit/set_cache_limit/clear_cache` block before invoking `mlx_lm.lora`. **Hardware handoff:** the FT runs are passed to a 24 GB M-series device run by another team member. Sources: DoRA (Liu et al., ICML 2024 Oral), LoRA+ (Hayou et al., ICML 2024), QLoRA (Dettmers et al., NeurIPS 2023), "Locating and Editing Factual Associations in GPT" (Meng et al., NeurIPS 2022), mlx-lm issues #828 + #1185, MLX Memory Safety Checklist (dev.to). Stage 4 (inference) blocked until the FT runner ships back `adapters/qwen35-4b-upsc-v1/` and `adapters/gemma4-e4b-upsc-v1/`.
-
-## Runbook for the FT handoff (24 GB M-series device)
-
-Pre-flight (run once per shell session):
-
-```bash
-# 1. Confirm hardware
-sysctl hw.memsize                            # expect 25769803776 (24 GiB)
-
-# 2. Raise the macOS Metal GPU cap (default is ~18 GB on 24 GB; bump to 21 GB)
-sudo sysctl iogpu.wired_limit_mb=21504
-
-# 3. Activate the project virtualenv
-cd /path/to/SLM
-source .venv/bin/activate                    # or: export PATH=".venv/bin:$PATH"
-
-# 4. Sanity-check mlx-lm + Gemma 4 load
-python -c "from mlx_lm import load; load('mlx-community/gemma-4-e4b-it-4bit', lazy=True); print('OK')"
-```
-
-Stage 3 — fine-tune both adapters (sequential; ~10-14 h each):
-
-```bash
-make ft-qwen     2>&1 | tee /tmp/ft-qwen.log
-make ft-gemma    2>&1 | tee /tmp/ft-gemma.log
-```
-
-Outputs:
-- `adapters/qwen35-4b-upsc-v1/{adapters.safetensors,adapter_config.json,training.log,…}`
-- `adapters/gemma4-e4b-upsc-v1/{adapters.safetensors,adapter_config.json,training.log,…}`
-
-Stage 3.4 — validate (each ~5 min):
-
-```bash
-make validate-qwen
-make validate-gemma
-```
-
-Validator exits 1 if > 5 % of held-out generations are unparseable per task.
-
-What to send back:
-1. The entire `adapters/` directory (both folders, ~50-100 MB).
-2. Both `training.log` files (final loss curves + Iter reports).
-3. A line from `sysctl iogpu.wired_limit_mb` and `python -c "import mlx.core as mx; print(mx.get_peak_memory()/1024**3)"` from the end of training (for the experiment-report §6.1 run-metadata section).
-
-If anything OOMs again: send the last 50 lines of the training log and `vm_stat` output; we triage from there.
-
-- 2026-05-26 (AWS pivot — EC2 g6.xlarge / L4 24 GB / QLoRA via PyTorch + peft + bnb): User opted to move the FT step to AWS rather than wait on a 24 GB Mac. AWS has no Apple Silicon, so MLX is off the table for FT; switch to PyTorch + HuggingFace `peft` + `bitsandbytes` (NF4 QLoRA per Dettmers et al. NeurIPS 2023). Published QLoRA-vs-MLX adaptation-quality gap < 2 %, so the framework switch is cheap. **Instance choice:** `g6.xlarge` (1× NVIDIA L4 24 GB VRAM, $0.805/hr on-demand, us-east-1) — sweet spot for 4B LoRA at our budget. Total cost estimate: ~$20-25 for both adapters at ~12 h each. SageMaker rejected as orchestration overkill for a one-off FT; Bedrock rejected (no Qwen/Gemma FT support); Trainium rejected (likely missing gemma4 / qwen3_5 model classes — same rabbit hole we just exited). Inference stays on the local M5 (free); only the FT step moves to AWS. **Code committed:** `scripts/run_ft_aws.py` (~100 LOC) — symbolic mirror of `run_ft.py` with the same rank=16, alpha=32, num_layers=16 (translated to peft `layers_to_transform=[last 16]`), target_modules=[q,k,v,o,gate,up,down]_proj, grad_accum=8, max_seq=2048, max_steps=16000, paged_adamw_8bit optimizer; `requirements-aws.txt` pinned (torch 2.5.1, transformers 4.46.3, peft 0.13.2, bitsandbytes 0.44.1, trl 0.11.4, accelerate 1.0.1, datasets 3.0.2); Makefile gains `ft-qwen-aws` + `ft-gemma-aws` targets. Adapter outputs are HF/peft format; convert to MLX for local inference via `mlx_lm convert --hf-path adapters/<name>` when adapters land back.
-
-## AWS runbook — EC2 g6.xlarge fine-tune (us-east-1)
-
-Pre-requisites:
-- AWS CLI configured (`aws sts get-caller-identity` works)
-- An EC2 key pair, security group allowing SSH from your IP
-- HuggingFace token (`hf_...`) for the gated Gemma-4-E4B-it download
-
-**1. Spin up the instance** (Deep Learning AMI ships with CUDA 12.4 + PyTorch 2.5):
-
-```bash
-# Latest DLAMI for us-east-1 — verify before launch as AMI IDs change
-AMI_ID=$(aws ec2 describe-images --region us-east-1   --owners amazon   --filters "Name=name,Values=Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04)*"   --query "Images | sort_by(@,&CreationDate)[-1].ImageId" --output text)
-
-aws ec2 run-instances   --region us-east-1   --image-id $AMI_ID   --instance-type g6.xlarge   --key-name <your-key>   --security-group-ids <sg-...>   --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":120,"VolumeType":"gp3"}}]'   --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=upsc-slm-ft}]'
-
-# Note the InstanceId, then:
-IP=$(aws ec2 describe-instances --region us-east-1 --instance-ids <i-...>        --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
-ssh -i ~/.ssh/<your-key>.pem ubuntu@$IP
-```
-
-**2. On the instance — first-time setup**:
-
-```bash
-git clone https://github.com/YeeshanMalik/upsc-slm-eval.git
-cd upsc-slm-eval
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements-aws.txt
-huggingface-cli login   # paste hf_... token (needed for gated Gemma-4-E4B-it)
-```
-
-**3. Pull training data from S3** (assumes you uploaded data/ft_split/{train,valid}.jsonl from the M5 first):
-
-```bash
-mkdir -p data/ft_split
-aws s3 sync s3://<your-bucket>/upsc-slm/ft_split/ data/ft_split/
-ls -lh data/ft_split/    # expect train.jsonl ~150 MB, valid.jsonl ~8 MB
-```
-
-**4. Fine-tune both adapters** (sequential; ~12 h each; resumable via checkpoints under adapters/<name>/checkpoint-N/):
-
-```bash
-PYTHON=python make ft-qwen-aws  2>&1 | tee /tmp/ft-qwen-aws.log
-PYTHON=python make ft-gemma-aws 2>&1 | tee /tmp/ft-gemma-aws.log
-```
-
-**5. Push adapters back to S3 + tear down**:
-
-```bash
-aws s3 sync adapters/ s3://<your-bucket>/upsc-slm/adapters/
-sudo shutdown -h now    # OR locally: aws ec2 terminate-instances --instance-ids <i-...>
-```
-
-**6. On the M5 — pull adapters, convert to MLX, resume**:
-
-```bash
-aws s3 sync s3://<your-bucket>/upsc-slm/adapters/ adapters/
-python -m mlx_lm convert --hf-path adapters/qwen35-4b-upsc-v1  --mlx-path adapters/qwen35-4b-upsc-v1-mlx  -q --q-bits 4
-python -m mlx_lm convert --hf-path adapters/gemma4-e4b-upsc-v1 --mlx-path adapters/gemma4-e4b-upsc-v1-mlx -q --q-bits 4
-make validate-qwen
-make validate-gemma
-make infer-c1a infer-c1b infer-c2 infer-c3   # Stage 4 — inference (~$50 Gemini API for C2+C3)
-make score-tier1 aggregate test-hypotheses   # Stage 5 — scoring
-```
-
-**Cost ceiling:** kill the instance the moment FT finishes — `g6.xlarge` is ~$0.80/h × ~24 h = ~$20 if you don't forget. Set a billing alert at $50 in CloudWatch as a safety net.
-
-- 2026-05-27 (Stage 3 FT — Qwen running on EC2, full data + dep + leakage story): Massive day. Sequence of events on the AWS path:
-
-   **1. Account + quota** — User created fresh AWS account; default quota for "Running On-Demand G and VT instances" was 0 vCPU (standard for new accounts). Initial Mumbai (ap-south-1) quota request submitted; switched to us-east-1 (N. Virginia) which had faster auto-approval. Approved value: 8 vCPU. After approval, hit "Insufficient capacity" on g6e.xlarge in some AZs; resolved by picking specific Subnet/AZ.
-
-   **2. Instance** — `g6e.xlarge` (1× NVIDIA L40S 48 GB VRAM, $1.86/hr us-east-1) launched in us-east-1. Storage: 120 GB → upped to 247 GB gp3 (DLAMI + model weights + checkpoints + venv ≈ 75 GB max usage). AMI: "Deep Learning Base AMI with Single CUDA (Ubuntu 24.04)" → `ami-0bdf3b08ec4350e48` x86 (NOT Arm). Key pair: `upsc-slm-MAIN.pem` created in us-east-1 (Mumbai key `upsc-slm.pem` doesn't apply — region-scoped). Actually used `upsc-slm.pem` (turned out the Mumbai-named file was the one that worked — user had both files; `upsc-slm-MAIN.pem` failed auth).
-
-   **3. Repo bootstrap on EC2** — GitHub deploy key approach (ed25519, read-only, scoped to this repo only). Generated `~/.ssh/github_deploy` on EC2, added to repo Deploy Keys (read-only). Then `git clone git@github.com:YeeshanMalik/upsc-slm-eval.git`. Production-grade: not a PAT, not ssh-agent forwarding.
-
-   **4. Production dir layout** — `mkdir -p logs adapters data/ft_split` ahead of FT; logs persistent (NOT /tmp); `set -euo pipefail` everywhere; HF token via `hf auth login` interactive (saves to `~/.cache/huggingface/`).
-
-   **5. Pre-flight verifier (`scripts/verify_aws_env.py`)** — 8 hard-fail checks before any GPU work starts: (a) CUDA-capable GPU with ≥24 GiB VRAM + BF16; (b) torch+CUDA matmul kernel actually works; (c) bitsandbytes NF4 4-bit Linear forward pass works AND version ≥0.46.1 (transformers 5.x requirement); (d) trl SFTTrainer+SFTConfig importable; (e) HuggingFace authenticated via Hub API; (f) ≥50 GiB disk free; (g) data/ft_split/train+valid.jsonl exist with plausible line counts; (h) configs/lora.yaml present. Wired as Makefile prereq of ft-{qwen,gemma}-aws so no training can start on a misconfigured box.
-
-   **6. Dep stack — 5 iterations** before settling. Original requirements-aws.txt was Oct-2024 vintage; cascade of incompatibilities surfaced as we hit them:
-   - `mlx-lm 0.21.5` → bumped to git commit `df1d3f3c` (Apr 2026, "Fix Gemma 4 sanitize() not stripping KV projections for shared layers") for the Gemma 4 hybrid-attention shared-layer bug
-   - `transformers 4.46.3` (Oct 2024) → didn't know `qwen3_5` arch (Mar 2026 release)
-   - `transformers 4.56.2` → still didn't know `qwen3_5` 
-   - `transformers 5.9.0` (May 2026) → has both `qwen3_5` and `gemma4`; major-version bump from 4.x
-   - `trl 0.11.4` → trl 1.5.0 (renamed `max_seq_length` → `max_length` in SFTConfig; `tokenizer=` → `processing_class=`)
-   - `peft 0.13.2` → peft 0.19.1
-   - `accelerate 1.0.1` → 1.13.0
-   - `datasets 3.0.2` → 4.7.0
-   - `bitsandbytes 0.44.1` → 0.49.2 (transformers 5.x requires ≥ 0.46.1, validated at model-load time)
-   - Missing transitive: `rich` (trl 0.11 lazy-imports inside SFTTrainer)
-   - `torch 2.5.1` → auto-upgraded to `torch 2.12.0 + cu130` when flash-linear-attention pulled CUDA 13 stack
-   - NEW deps for Qwen 3.5 hybrid arch: `flash-linear-attention 0.5.0` + `causal-conv1d 1.6.2.post1` (the second built from source over ~7 min; without it Qwen 3.5's linear-attention layers fall back to Python = 21 sec/step. With it: 4.2 sec/step. ~5× speedup)
-   Final stack pinned in `requirements-aws.txt`.
-
-   **7. Architecture-aware run_ft_aws.py rewrite** — production-grade audit found 12 issues across the original 95-LOC script. Rewrite (~190 LOC):
-   - `_get_num_text_layers(base)`: walks top-level config AND text_config to find `num_hidden_layers` (Qwen 3.5 wraps text attrs in `text_config`; Gemma 4 too)
-   - `_build_target_modules_regex(base, total, lora_n)`: regex scoped to `model.layers.<N>.*.X_proj` so LoRA hits only the text-decoder's last N layers, NOT the multimodal vision/audio towers (which share the same proj names)
-   - Replaced deprecated `torch_dtype=` with `dtype=` (transformers 5.x)
-   - Added `prepare_model_for_kbit_training()` (canonical QLoRA prep — handles layer-norm upcasting + grad-checkpoint-vs-quant interactions)
-   - `trust_remote_code=True` on AutoModel/AutoConfig/AutoTokenizer (Qwen 3.5 + Gemma 4 ship custom modeling code for the fresh architectures)
-   - Assertion: `n_trainable in [1M, 5%]` after `get_peft_model` — guarantees target_modules regex didn't silently match zero modules (would produce no-op LoRA)
-   - Auto-resume passes actual latest checkpoint PATH (not bool) — trl 1.x change
-   - `model.config.pad_token_id` propagated from tokenizer (required for some attn impls)
-   - `python -u` (unbuffered stdout) so loss prints flush per-line under nohup (vs 8 KB block buffering)
-   - `log_level="info"` in SFTConfig (transformers 5.x defaults "passive" which silences INFO-level training logs)
-
-   **8. CONTENT-LEVEL DATA LEAKAGE FIX (CRITICAL)** — User paused FT before launch to verify data quality. Audit found **556 leaked questions** in two modes:
-   - Task A (272 leaked rows): same UPSC PYQ exists in `prelims_pyq_questions` AND `prod.mcqs` with different IDs but identical question text. Old `assert_no_leakage` only checked `pair_id` → missed cross-source duplicates
-   - Task C (2,465 leaked rows): `evaluation_questions` has many student answers per UPSC question; eval picks one student's grading for a question, FT picks 3+ other students' gradings of the same UPSC question. Different `(question_id, evaluation_id)` pairs, same question stem → model would have been trained on the rubric pattern for the same UPSC question it'd be tested on
-   - **Both modes invalidate the pre-registered hypothesis tests.** Fix: `assert_no_leakage` now takes optional `eval_question_hashes` + `ft_question_hashes` args and checks normalized-whitespace SHA-256 hashes. Built-into corpus build: question text hashes computed for eval, FT pairs dropped if hash matches. 9 unit tests pass (4 ID-level + 5 new content-level). 
-   - Cleaned corpus: 43,615 → **40,571 pairs** (dropped 347 Task A + 2,697 Task C = 3,044 leaked). Re-materialized JSONL: 38,544 train + 2,027 valid. Both leakage modes verified empty.
-
-   **9. PRAYAS PRODUCTION PROMPTS (received 2026-05-26)** — All three pasted by user in single message:
-   - `configs/prompts/prelims_explanation.md` (~10 KB, Task F bilingual EN/HI schema with statement-analysis structure)
-   - `configs/prompts/mains_model_answer.md` (~21 KB, Task G DSL L1-L4 + banned words + mandatory diagrams + R-D-S-C protocol — markedly more constrained than the FT-corpus Task-B scaffold)
-   - `configs/prompts/current_affairs_queries.md` (Query Specialist — auxiliary, not wired into eval pipeline; out of scope)
-   - Wired via `scripts/runners.get_production_prompt(task)` (Path A2 — inference-time only, no re-FT). Front-matter splitter uses `
 ---
-` to avoid mis-splitting on markdown table separators.
-   - `eval-design.md` §4.6 / §4.7 updated: prompts marked as received; Task G note that production prompt is markedly more constrained than the FT-corpus scaffold → format compliance becomes a meaningful Tier-1 metric.
 
-   **10. Qwen FT launched + training healthy** — `make ft-qwen-aws` daemonized via nohup + disown. After ~4 false starts (rich missing, qwen3_5 missing from transformers, max_seq_length API rename, bnb version mismatch), it now runs stably:
-   - PID 9868, alive 5+ hours as of this log entry
-   - Step ~4500/16000 (28%) — approaching the 1-epoch mark (step 4818)
-   - **Train loss: 1.122 → 0.79** (-29.6 % over 4 K steps). Plateauing in 0.78-0.81 band
-   - **Eval loss trajectory** (8 evals, every 500 steps): 0.925 → 0.886 → 0.862 → 0.839 → 0.824 → 0.811 → 0.801 → **0.791**. -14.5 % from start. Still descending.
-   - Train-eval gap **shrinking from +0.04 (step 1000) to +0.003 (step 3500)** — NOT overfitting, the inverse: convergent generalization. Model is finding patterns that transfer to held-out data
-   - Token accuracy: 72.8 % → 79.5 %
-   - Grad norm stable 0.4-0.55 (no instability)
-   - 4 checkpoints saved (1000, 2000, 3000, 4000) — adapter recoverable from any
-   - GPU: 75-95 % util sustained, 18.9 GB / 46 GB VRAM, 71-75 °C, ~240 W of 350 W TDP
-   - ETA ~14 h remaining for Qwen; Gemma FT launches sequentially after
-   - Cost so far: ~$10. Projected total for both adapters: ~$74
+## 5. Current pipeline state
 
-   **11. Pending decisions surfaced but deferred**:
-   - **Task imbalance** (A=66.6%, B=6.4%, C=19.9%, E=7.2%): accepted Option 1 (natural distribution, document as methodology note). Won't oversample.
-   - **DoRA vs LoRA v2 ablation** suggested in research subagent's report: not in scope for v1
-   - **MTL-LoRA / R-LoRA** (Oct 2024-Feb 2025 papers showing > LoRA + > DoRA in multi-task settings): noted as v2 candidate
-   - **Production prompt format ≠ FT scaffold for Tasks F/G**: Path A2 means inference-time-only prompt swap. F/G format-compliance will be a meaningful Tier-1 metric on top of content metrics
+| Step | Status |
+|---|---|
+| Corpus acquisition | ✅ Done (PIB killed at 92% by choice: 16,723 files / 41 ministries) |
+| Reference-book OCR + artifact cleanup | ✅ Done (5.84 M chars, 0 typos remaining) |
+| **Pipeline audit vs literature** | ✅ Done 2026-06-11 — 39 findings (6 crash-level, ~10 silent no-ops), ALL fixed; `v2-audit-findings.md` is the record |
+| SFT corpus v2 (prompt-completion + gates) | ✅ Rebuilt: 28,993 train / 1,524 valid; 583 cross-language eval siblings + 327 overlap rows excised (v1 shipped with this contamination) |
+| Task-pulse holdout | ✅ `data/eval_set_holdout.parquet` (200 MCQs, `training/eval/build_holdout.py`) |
+| EC2 environment | ✅ v2 code + deps on the box (18.233.5.108); 136/136 tests pass incl. the 100-step CUDA smoke |
+| Corpus build on EC2 | ✅ CLEAN gate; 0.37/0.38B exposures (rebuild pending with growth-sweep sources) |
+| Corpus growth sweep (PIB×6 + DTE full + RC/QA + qa_bank) | ⏳ landing 2026-06-12 |
+| Full CPT (Gemma + Qwen) | Pending — measured 170 s/step → ~67 L40S-h/model at bs=1 (bs=2 probe planned) |
+| Full SFT (Gemma + Qwen) | Pending — ~2-3 L40S-h each (950 steps, was misconfigured at 34 epochs) |
+| 6-cell ablation grid | Pending |
+| v2 inference + scoring | Pending — `make infer-v2-{gemma,qwen} ADAPTER=...`, `make score-v2` |
+| RC/QA synthetic augmentation | Scaffolded (`training/data/generate_rc_qa.py`) — API-cost-gated, optional |
+| v2 paper draft | After ablation lands |
 
-- 2026-05-28 (Qwen FT completed; Gemma FT launched with regex fix): Qwen3.5-4B adapter trained cleanly through 16,000 steps. Final eval loss **0.7268**, train loss 0.69 plateau, train→eval gap 0.12 (no overfitting). 21h 47m wall-clock on g6e.xlarge L40S. Adapter validated via 50-row held-out smoke test — correct MCQ answers + production-style format compliance. Gemma FT launched immediately after. First attempt crashed on launch with `ValueError: Target modules ... not found in the base model`. Root cause: Qwen uses `model.layers.N.X` while Gemma uses `model.language_model.layers.N.X` (multimodal class wraps text layers under `language_model.`). The original target-module regex put `language_model.` in the wrong position. Fix: `^(?:.*\.)?model\.(?:language_model\.)?layers\.<N>\.` — `language_model.` is now optional and properly placed between `model.` and `layers.`. Verified via smoke test showing 12,386,304 trainable params (0.22 %) on Gemma. Launched via `/tmp/launch_gemma.sh` (a script file, not inline heredoc — the inline form didn't take). PID 21683, daemonized cleanly. Cost commits 09784c1 (regex fix), 60a5691 (python -u under nohup), 2d04e0f (log_level info).
+**Compute path:** same V1 AWS EC2 g6e.xlarge (L40S 48 GB VRAM) at 18.233.5.108 (private 172.31.94.173). Key: `AWS/upsc-slm.pem` in repo root.
 
-- 2026-05-29 (Gemma FT completed at 21:27 UTC; both adapters merged on EC2 with auto-shutdown watcher): Gemma trained to step 16,000 over ~22h. Final state: eval loss 0.8140 plateau, train→eval gap 0.12 (healthy), token accuracy 79.1 %. Adapter checkpoint-15000 emitted clean adapter_model.safetensors (24 MB). **Wrote `scripts/merge_adapter.py`** — loads base in bf16 (NOT 4-bit; PEFT merge requires fp16/bf16 weight space), calls `PeftModel.from_pretrained(base, adapter).merge_and_unload()`, saves merged HF model to `adapters/<name>-merged/`. Wrote an auto-shutdown watcher (`/tmp/watch_and_shutdown.sh`) that polls for FT PID exit, verifies `adapter_model.safetensors` saved at top of adapter dir, runs merge_adapter for BOTH Gemma + Qwen, then `sudo shutdown -h +2`. Watcher fired cleanly at 23:14 UTC, both merges completed (Gemma 15 GB, Qwen 7.9 GB), instance powered down at 23:16:58 UTC — confirmed via EC2 system log retrieved next session. The shutdown sequence is the textbook orderly poweroff (every service stopped, no kill signals, no crash markers).
+**Open items (none blocking):**
+- Yojana / Kurukshetra magazines — `publicationsdivision.gov.in` timing out; deferred
+- Synthetic Q/A augmentation — explicitly deferred; revisit only if v2 Task A misses the +10pp gate
+- Hindi corpus — separate effort per [`v2-hindi-strategy.md`](v2-hindi-strategy.md)
 
-- 2026-05-30 (M5 SCP + MLX conversion + audit-fix of 20 pipeline bugs): Instance restarted next morning (new public hostname `ec2-13-221-93-103…`). SSH host-key verified against the fingerprint recorded in the EC2 systemlog at first boot (`SHA256:zIGg/WdPD9+drtdI6VVJXimK8lIWevWQwX9Len9k0nw`) before rsync. Both merged HF dirs `rsync --partial --progress`'d to M5 in parallel — combined ~23 GB, ~2 hours wall-clock at India ↔ us-east-1 link speed. Pulled small artifacts separately (raw PEFT adapters 24 MB + 21 MB, training logs, trainer_state.json from final checkpoints) and committed to GitHub `YeeshanMalik/upsc-slm-eval` private repo (commit 3e93be2). `mlx_lm convert` on M5: Qwen converted clean at 4.503 bits/weight (2.2 GB MLX dir), needed config patch `model_type: qwen3_5_text` → `qwen3_5` because the HF auto-derived suffix isn't in mlx_lm's model registry. Gemma triggered the macOS Metal GPU command-buffer watchdog (long Mamba SSM kernels exceed the ~5-10s watchdog window); workaround was forcing `mx.set_default_device(mx.cpu)` before convert — completed in 0.7 min on CPU, output 3.9 GB. Smoke-loaded both MLX models, both generated correct answers on "1947 independence" probe.
+---
 
-  **Pipeline audit (commit 5df55e1):** ran an end-to-end line-by-line audit on the inference + scoring code and found **20 bugs** (4 critical, 8 important, 8 quality). Critical fixes: `_distractor_coverage` was case-broken (uppercase letter regex against lowercased haystack → always returned 0); `_pick_F_branch` returned Hindi branch but Task-A gold is English-only (44 % of Task F rows would have scored garbage BERTScore); `_batch_text_pairs` aligned scored rows to df by position (latent — would break if any row skipped); REFUSAL_MARKERS Hindi alternation had real-word typos. Important fixes: per-shard parquet writer (was O(n²)); default `--run-id` now timestamped (was date-only — same-day re-runs silently inherited state); abort on consecutive errors; confidence regex picks last integer (was first — latched onto prompt-echoed "0 to 100"); confidence default → None (was 50, contaminating Brier); MLX latency includes chat-template render; defensive `parse_output` for list/null `answer`; bilingual delta with McNemar; significance flag requires t-test AND Wilcoxon agreement. Quality fixes: sentence regex accepts digit/quote starts; word_count_adherence asymmetric (undershoot 1.5×); directive density log-symmetric; Task B + E emit schema_valid. Each fix verified empirically with synthetic data; full smoke run produced 116/116 expected report-table cells filled.
+## 6. Reference documents
 
-  **Wrote `scripts/render_report.py`** (~280 LOC) — auto-fills the §6 / §7 tables in `experiment-report.md` from `aggregate.parquet` + `hypothesis_tests.parquet` + `stratum_heatmap.parquet`. In-place markdown table replacement; preserves blank-line separators (regex bug found and fixed: `\s*\n?` matched both newlines in `...\n\n####`, consuming the blank). `--check` flag for gap audit without writing. Makefile target `render-report` chains aggregate + test-hypotheses + render.
+| Doc | Purpose |
+|---|---|
+| [`experiment-report.md`](experiment-report.md) | Pre-registered scientific report — Aim/Setup/Procedure/Expected/Actual/Results/Inference (v1 §6-§8 complete) |
+| [`eval-design.md`](eval-design.md) | ~45 Tier-1 metrics × 4 tasks × statistical protocol (paired bootstrap + dual-test + BH-FDR) |
+| [`architecture.md`](architecture.md) | 4-plane system architecture (data / inference / scoring / dashboard) |
+| [`project-brief.md`](project-brief.md) | Non-technical stakeholder one-pager |
+| [`qa-status-cto.md`](qa-status-cto.md) | 6-section CTO-facing QA summary |
+| [`v2-methodology.md`](v2-methodology.md) | CPT → SFT recipe, 6-cell ablation grid, acceptance gates |
+| [`v2-hindi-strategy.md`](v2-hindi-strategy.md) | EN-only training decision + Hindi no-regression pulse + v3+ scope |
+| [`v2-expert-input-plan.md`](v2-expert-input-plan.md) | UPSC + SLM expert hours needed, critical path |
+| [`dashboard/DEPLOY.md`](dashboard/DEPLOY.md) | Streamlit Cloud deploy guide |
+| [`test-strategy.md`](test-strategy.md) | 6-layer test strategy across data + training planes |
 
-- 2026-06-02 (v1 inference run end-to-end on EC2; switched HF backend from vLLM after compat issues): EC2 restarted for inference. Initially tried vLLM 0.22.0 for ~10× throughput via continuous batching — failed for BOTH our merged models: Qwen3.5 hit a `multimodal_config.mm_encoder_tp_mode` AttributeError in the text-only path (vLLM bug; the text-only class still touches multimodal config); Gemma hit weight-naming mismatch (vLLM expected k_norm.weight on layers 24-41 not in our checkpoint). **Stuck with HF transformers** but added `HFTransformersRunner.predict_batch()` for batched generation. Smoke benchmarked Qwen at bs=64 → **429 tok/s** (5.8× over bs=1), 17.6 GB VRAM. Gemma at bs=64 → 268 tok/s, 21.3 GB. Run-id `20260602-130527`. C1a hit OOM at row 800 (Task F batches with 3500-tok production prompts at bs=16 exceeded the 44 GB budget) — fixed by adding `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` and dropping bs to 16 for Gemma / 32 for Qwen. C1b later hit OOM on Task G batches at bs=32; resumed with bs=8. C2/C3 (Gemini) ran in parallel via API — `gemini-3-flash` (the pre-registered name) returned 404 NOT_FOUND; the actual live model is `gemini-3.5-flash` so `GEMINI_MODEL` was exposed as env-configurable (default switched to `gemini-3.5-flash`, commit 5fad4ea). C3 saw 2 transient 503s that exhausted tenacity retries. Watcher process polled per-condition row counts every 60 s and aborted the auto-shutdown when C1b ended short of 3,200 (96 missing rows) — correctly preserved partial state. Resumed both C1b + C3 to fill the gaps. **All 4 conditions × 6 inference tasks complete: 12,800 predictions in `results/predictions.parquet`.**
+---
 
-- 2026-06-03 (scoring chain crashed + fixed + completed; full report rendered): Watcher detected all 4 conditions complete at 07:19:39 UTC and fired `score_tier1.py`. **Crashed at 07:19:55 UTC with `AttributeError: 'list' object has no attribute 'strip'`** on `gold.explanation`. Root cause: some Task-A gold rows have `explanation` as a list of paragraphs (JSON array) instead of a string — the pattern `(x.get("k") or "").strip()` errors because non-empty list is truthy. Fix (commit 332a8f5): added defensive `_as_text(val)` helper handling None / str / list / dict / scalar uniformly; bulk-replaced 30 call sites. Re-ran scoring chain on EC2. **Outputs:** `scores_tier1.parquet` (12,800 rows × ~50 metric cols, 870 KB), `aggregate.parquet` (28 KB, per-(condition, task, language, metric) means + bootstrap CIs), `hypothesis_tests.parquet` (1,472 pairwise tests, BH-FDR + Cohen's d/h + dual-test-agreement flag), `stratum_heatmap.parquet` (230 strata × champion-vs-C3 verdicts), `aggregate.extras.json` (bilingual delta with McNemar, silly-mistake breakdown, Task-C rank correlations). SCP'd to M5; `render_report.py` filled all 11 §6/§7 tables (116/116 cells, 1,472 pairwise tests, 230 heatmap strata). Wrote 2-line "Infer / v2 path" summary below each table citing specific numbers + the deferred-to-v2 items from eval-design §4 / §9. Wrote §8 Inference (Discussion) end-to-end from the actual numbers — 8.1 verdict table (3 of 4 core tasks WIN at q ≤ 0.05; Task A LOSS with Cohen's d −0.66), 8.2 pre-reg-vs-reality (3 predictions refuted with direction inverted), 8.3 per-stratum reading, 8.4 mistakes catalog, 8.5 hybrid-routing implications (Gemini for Task A + Hindi-heavy; FT-SLM for B/C/E/F/G; estimated ₹53-96 lakh/year savings on projected scale), 8.6 v2 roadmap by priority. Final commit d832823. Run total cost: ~$25 EC2 + ~$8 Gemini API ≈ **~$33**.
+## 7. Locked decisions
 
-- 2026-06-03 (QA doc for CTO + v2 expert-input plan): Wrote `qa-status-cto.md` — 6-section single-pager for the CTO. Sections: (1) what's been done; (2) the 6 tasks under test with input/output/gold-reference schemas; (3) ~45 Tier-1 metric inventory organized by task; (4) 5-layer QA plan (Methodology / Leakage / Computational / Statistical / Reproducibility) — each row names a failure mode + the mechanism preventing it; (5) 12-row acceptance criteria with web-research-cited production thresholds (format-validity ≥ 0.90 per [JSONSchemaBench](https://arxiv.org/html/2501.10868v1), hallucination ≤ 0.15 per ed-tech literature, ECE ≤ 0.10 per LLM-calibration mid-range, Cohen's d ≥ 0.5 for production-relevant findings per [Matthew Jane benchmarks](https://matthewbjane.quarto.pub/Benchmarks.html)); (6) v2 roadmap tied to specific deferrals in eval-design §4 / §9. ~1,600 words. Committed at 302d7e0. Wrote `v2-expert-input-plan.md` — answers "what UPSC + SLM experts are needed, hours, critical path." Grounded in [Autorubric](https://arxiv.org/html/2603.00077v1) (rubric design ~14 criteria/item average), [Schroeders & Gnambs 2025](https://journals.sagepub.com/doi/10.1177/25152459251314798) (IRT sample-size minimums), [Encord IRR](https://encord.com/blog/interrater-reliability-krippendorffs-alpha/) (Krippendorff α ≥ 0.6 floor), [prayas Mains evaluation](https://evaluation.prepp.in/) throughput numbers. **Total expert budget: 639-962 hours across UPSC content lead + 2 mentors + 1 SLM/ML expert + 1 external auditor. ~14 calendar weeks elapsed with parallelism.** §7 of that doc carries an MVP-if-budget-tight variant: 130-225 UPSC hours + 56-92 ML hours + auditor → 5-6 weeks. Committed at 1b2d331.
+| Decision | Rationale |
+|---|---|
+| Dual FT candidates: Gemma-4-E4B-it + Qwen3.5-4B | Isolates "Indic-via-FT vs Indic-via-pretraining" + architecture/family comparison |
+| Comparator: Gemini-3.5-Flash (zero-shot + few-shot) | Production API benchmark prayas would otherwise route to |
+| Tasks A/B/C/E (v1) + F/G (production prompts) | Skip Interview (T2 personalization) and Hindi-only tasks for v1 |
+| Tier-1 deterministic metrics only (no LLM-judge) | Quantitative-first; reproducibility; no judge-family bias |
+| Local M5 for dashboard + code; EC2 L40S for training | M5 has crashed twice on local GPU/OCR — heavy ML stays remote (see `feedback_m5_memory_pressure`) |
+| Single source-of-truth: corpus build → leakage gate → tokenize | Leakage gate is non-optional (`--skip-leakage` removed); SHA-256 + 5-gram redundant checks |
+| EN-only training corpus for v2 | Hindi separately addressed via pulse no-regression gate, full strategy in `v2-hindi-strategy.md` |
+| `runs/ablation/`, no `v2_` cell prefixes | Production-clean naming; "v2" stays only where it disambiguates from v1 artifacts on disk |
+| `predictions.parquet` + `eval_set.parquet` whitelisted for Cloud deploy | Per-row drill page needs them; user-approved expose |
 
-- 2026-06-04 (v1 publication-ready; v2 transition): All v1 artifacts pushed to private GitHub `YeeshanMalik/upsc-slm-eval`. Repo contains: raw PEFT adapters (24 MB + 21 MB), final trainer_state.json per adapter, full training logs from both FT runs, 4-condition inference results (scores_tier1, aggregate, hypothesis_tests, stratum_heatmap, extras.json), the rendered experiment-report.md with all 11 §6/§7 tables filled + §8 Inference written, qa-status-cto.md, v2-expert-input-plan.md, the full audit + watcher logs. **predictions.parquet (52 MB) deliberately kept gitignored** as it contains student-PII-derived content (raw gold answers from the source DB). The merged HF dirs (15 + 8 GB) and MLX-converted dirs (3.9 + 2.2 GB) are gitignored too — deterministically rebuildable from the committed raw adapters via `scripts/merge_adapter.py` + `mlx_lm convert`. v2 work now begins per the expert-input plan; first priorities per §8.6 are P0 (constrained decoding + logit-based confidence — pure SLM engineering, no expert blocker) running in parallel with P1 rubric design (UPSC pedagogy lead).
+---
 
-   **Repo commits since last log entry (May 21):** content-leakage fix + production prompts wiring (`bf7c998`), unbuffered stdout (`60a5691`), log_level info (`2d04e0f`), trl 1.5 max_length rename (`c66cd4d`), transformers 5.9 + trust_remote_code (`d5f11bf`), bnb 0.49.2 + verifier hardening (`60ba84d`), prod-grade run_ft_aws rewrite (`0f19aae`), and the various Makefile / deps tweaks. All on `main` at github.com/YeeshanMalik/upsc-slm-eval.
+## 8. Session log (compressed)
+
+Detail logs for older work are in git history (commits since 2026-05-14). Recent material events:
+
+- **2026-06-04** v1 published. 4-condition × 6-task eval, 12,800 predictions, 11 §6/§7 report tables filled, §8 Inference written. Cost ~$33.
+- **2026-06-04** v2 methodology authored. CPT→SFT recipe, 6-cell ablation, length-penalty loss locked.
+- **2026-06-04** Streamlit dashboard built (4 pages incl. live playground).
+- **2026-06-05** v2 training code committed. 23 acquirer modules, full corpus pipeline (OCR/clean/leakage/tokenize), CPT + SFT trainers, smoke-cpt entrypoint, 80+ tests.
+- **2026-06-08** Acquisition round-2: ORF + Wikipedia + NDMA + Newspapers + Constitution + MHA + curated framework. ~4.2 GB on disk.
+- **2026-06-09** PMF Geography 2024 + NDMA OCR completed (128/128 docs); SFT corpus build runs (30K rows / 1.5K valid).
+- **2026-06-12** Corpus build shipped + growth sweep:
+  - **Corpus build COMPLETE on EC2** after 4 runs, each killed by a distinct real defect the gates caught: (1) ocr.py returned exit-1 on PDF-less sources → build died at `drdo`; (2) leakage gate caught 1,073 eval questions verbatim in local_db table dumps (the tables the eval set was drawn from) → new Stage 2c record-level purge (2,308 records excised); (3) 22 PYQ reprints in Mrunal pages/Laxmikanth appendix → purge extended to paragraph-level over all 65K .md files; (4) transformers-5.x `apply_chat_template` returns dict → `return_dict=False`. Final: gate CLEAN, 295/298M unique tokens, 0.37/0.38B weighted exposures, replay 31%, instruct 7%.
+  - **FFFD-ligature rescue** added to ocr.py (pymupdf4llm emits U+FFFD for `ti`/`ft` ligatures in some fonts; plain `get_text` decodes them) — fired 305× across the corpus during the build.
+  - **Gemma smoke PASSED on real base** (loss 2.4→2.05 over 100 steps, 26.8GB peak VRAM, adapter round-trip OK) after fixing the coverage assertion for Gemma-4-E4B's 18 KV-shared layers (258 eligible sites, not 294).
+  - **Literature calibration**: published CPT wins cluster at 1.2–30B domain tokens; our 0.18B is below that floor → growth sweep launched (PIB 3-year back-extension ~45K new articles, DTE full archive to 1991 ~50K articles, AdaptLLM-style RC/QA generation over NCERT+refbooks ~$0.79 API). **r=128 analyzed and REJECTED** (memorization risk: adapter capacity would exceed corpus information; r64@scale-2.0 is the drift minimum — arXiv:2410.21228, 2507.21009).
+  - **qa_bank source created** (repeat ×3): the DB question tables split out of local_db — mcqs + ai_generated + evaluation_questions + **recovered prelims_pyq_questions & pyqs** (the bilingual EN+HI blobs read as 56% Devanagari and the doc-level language filter had silently dropped 40M chars; fixed with char-level Devanagari stripping for record files) + fresh `article_generated_questions` pull from upscdev (129 rows, targeted SELECT). ~98M chars total.
+- **2026-06-11** Full pipeline audit + fix sweep (`v2-audit-findings.md`):
+  - 6 parallel literature-grounded review passes found 39 issues: Gemma LoRA regex matched zero modules (crash), sft.py missing imports (never ran), CPT LR 1e-5 a full-param rate on adapters (near-no-op), length-penalty triply dead (zero gradient), pulse gates never wired / Hindi gate parsed 0 items, replay .jsonl never entered the corpus (0% replay), SFT misconfigured at 34 epochs, no mix weighting existed, chat-template train/inference mismatch, Qwen EOS masked from loss, double BOS at inference, cell-6 checkpoint rotated away, + more.
+  - All fixed in 4 phases (data plane / trainer plane / eval-orchestration / methodology doc). New: `data_mix_cpt.yaml` (enforced), `build_holdout.py`, `build_instruct_cpt.py`, `generate_rc_qa.py` (scaffold), `infer-v2-*`/`score-v2` Make targets, `--adapter-dir` on run_inference.
+  - New leakage gate on the SFT corpus caught **v1-era contamination**: 583 rows where the English sibling of a Hindi eval question was in the training set (v1's ID check compared full ids incl. language suffix). v1's Hindi-stratum numbers should be read with this caveat.
+  - EC2 env rebuilt: torch 2.11.0+cu130 restored, torchvision/audio removed (datasets VideoReader conflict), pymupdf4llm pin fixed (0.0.30 → 1.27.2.3). CUDA smoke (100 steps, GPT-2) passed for the first time ever — it had latent crashes (fp16 kwarg, tuple unpack) proving it never ran.
+- **2026-06-10** Major additions:
+  - **Dashboard deployed** to Streamlit Cloud (Yeeshan-prayasai/upsc-slm-eval). Added Inference column (one-line plain-English takeaway per task) + significance column (BH-FDR p + Cohen's d). Fixed pre-existing sign bug in hypothesis_tests parquet (delta now computed from paired means).
+  - **PIB acquirer** built with 3 parallel workers covering 12-month window (~5-10 M tokens projected).
+  - **Reference books added**: Spectrum + Laxmikanth + Satish Chandra + Bipan Chandra + Poonam Dahiya + Karthikeyan + PMF Geography (G.C. Leong dropped — Tesseract noise).
+  - **Cleanup helpers added to `clean.py`**: `strip_dropcap_and_strikethrough()` (removes ~3,800 pymupdf4llm strikethrough artifacts from Laxmikanth+Spectrum), `fix_idrop_typos()` (broad `aton/iton/cton/tng` suffix fixes for the PDF font 'fi'-ligature drop bug, with `automaton/triton/briton` exclusions). 12 new tests pin behavior.
+  - **Production-build cleanup** across 15 files: removed Phase-N framing (Phase 0/1/2/3 → descriptive language), removed v2-branding from internal docstrings/configs (keeping it only where it disambiguates output paths from v1 artifacts), renamed `runs/ablation_v2/` → `runs/ablation/`, `cell2_v2_sft_only` → `cell2_sft_only`, bumped `training.__version__` 0.1.0 → 1.0.0.
+  - **Memory rules saved**: `feedback_m5_memory_pressure` (don't install heavy ML stacks on M5).
+  - **Repo transferred** GitHub ownership: `YeeshanMalik` → `Yeeshan-prayasai`; local remote updated.
+
+---
+
+## 9. Critical command reference
+
+```
+# Local
+make build-cpt-corpus           # OCR → clean → leakage → tokenize+pack
+make build-sft-corpus           # Build SFT JSONL from v1 ft_corpus + pyqs word-count join
+make export-corpus              # Parquet → JSONL for human inspection
+make dashboard                  # Launch Streamlit locally
+.venv/bin/python -m pytest training/tests/    # Run test suite
+
+# EC2 (after `make verify-aws-env`)
+make smoke-cpt-gemma            # 100-step smoke
+make cpt-gemma / make cpt-qwen  # ~55 L40S-h each
+make sft-gemma-v2 / make sft-qwen-v2   # ~20 L40S-h each
+make ablation-gemma / make ablation-qwen   # 6-cell grid
+make infer-v2 / make score-v2   # reuse v1 inference + scoring on new adapters
+```

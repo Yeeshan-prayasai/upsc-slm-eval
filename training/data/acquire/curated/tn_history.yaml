@@ -1,0 +1,17 @@
+source: tn_history
+description: >
+  Tamil Nadu State Board History textbooks (English medium) — Class 11 and
+  Class 12, served from the TN Department of School Education's textbook
+  CDN (d1e5r329t7a85t.cloudfront.net, resolved via the tnschools.gov.in
+  SCERT books API). Each file is the combined full-year volume. Widely
+  recommended UPSC reading for ancient/medieval/modern Indian history.
+
+items:
+  - url: "https://d1e5r329t7a85t.cloudfront.net/syllabuspdf/11th_History_EM_Text.pdf"
+    title: "TN State Board Class 11 History (English Medium, combined volumes)"
+    filename: "TN_Class11_History_EM.pdf"
+    category: "textbook"
+  - url: "https://d1e5r329t7a85t.cloudfront.net/syllabuspdf/12th_History_EM_Text.pdf"
+    title: "TN State Board Class 12 History (English Medium, combined volumes)"
+    filename: "TN_Class12_History_EM.pdf"
+    category: "textbook"

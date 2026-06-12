@@ -1,0 +1,78 @@
+# CPT corpus mix — per-source weighting enforced by training/data/tokenize_pack.py.
+#
+# Without this stage, every source's batch share equals its accidental disk
+# volume (ORF commentary would dominate; NCERT/reference books — the
+# highest-yield Prelims sources — would be <10% of domain tokens; replay
+# was previously 0% because .jsonl never entered the corpus).
+#
+# Semantics:
+#   repeat:     epochs over that source inside ONE corpus pass.
+#               Fractional values downsample deterministically
+#               (repeat: 0.5 → ~half the docs, hash-selected).
+#               Muennighoff et al. 2023 (arXiv 2305.16264): repeating
+#               unique data up to ~4 epochs ≈ as good as fresh tokens.
+#   cap_tokens: hard ceiling on unique tokens consumed from that source
+#               (docs beyond the cap are skipped; selection order is the
+#               seeded global shuffle, not alphabetical).
+#               Mutually exclusive with repeat > 1.
+#
+# Design targets (Ibrahim 2024 / ACM CSUR 2025 survey):
+#   - domain-dominant: ~80% domain / ~20% replay (replay band 5-30%)
+#   - high-yield Prelims sources (NCERT, reference books) repeated hardest
+#   - IR commentary (ORF/MEA) capped — low Prelims-fact density
+#   - instruction-format data included so CPT on the -it checkpoints
+#     doesn't erode chat formatting (AdaptLLM, arXiv 2309.09530)
+
+sources:
+  # ---- High-yield Prelims core (small, repeat hard) ----
+  ncert:            {repeat: 4}
+  reference_books:  {repeat: 4}
+  constitution:     {repeat: 4}
+  dm_core:          {repeat: 3}    # DM Act + National Policy/Plan + Sendai — the GS3 DM "standard source"
+  tn_history:       {repeat: 3}    # TN State Board History — Prelims supplement textbook
+
+  # ---- Exam-framed notes (mid-density) ----
+  pmf_ias:          {repeat: 3}
+  mrunal:           {repeat: 3}
+  prs:              {repeat: 3}
+
+  # ---- Government primary (factual but verbose) ----
+  economic_survey:  {repeat: 2}
+  arc2:             {repeat: 2}
+  niti:             {repeat: 2}
+  mha_annual_reports: {repeat: 2}
+  moef:             {repeat: 2}
+  ndma:             {repeat: 2}
+  ipcc:             {repeat: 2}
+  rbi:              {repeat: 2}    # annual report / FSR / banking trends / MPR
+  nfhs_census:      {repeat: 2}    # NFHS-5 + Census 2011 summaries — "core" per source list
+  budget:           {repeat: 1}    # heavy boilerplate; one pass
+
+  # ---- Current affairs (dated; one pass) ----
+  pib:              {repeat: 1}
+  newspapers:       {repeat: 1}
+  isro:             {repeat: 1}
+  drdo:             {repeat: 1}
+  dte:              {repeat: 1}    # Down To Earth — environment current affairs
+
+  # ---- IR commentary (low Prelims density — capped) ----
+  orf:              {cap_tokens: 30000000}
+  mea:              {cap_tokens: 30000000}
+  idsa:             {cap_tokens: 20000000}
+
+  # ---- Internal QA/lesson content ----
+  # qa_bank = the DB question tables (mcqs, ai-generated, evaluation
+  # questions; ~74M chars, eval-purged) split out of local_db — exam-
+  # format factual Q&A is the highest-yield signal shape for Task A
+  # (Ovadia 2024: facts learn from many phrasings; this is the natural
+  # counterpart of the synthetic rc_qa source).
+  qa_bank:          {repeat: 3}
+  local_db:         {repeat: 1}    # remaining: news/current-affairs/glossary
+  rc_qa:            {repeat: 2}    # synthetic AdaptLLM-style RC over NCERT+refbooks
+
+  # ---- Instruction-format data (anti-forgetting for -it chat ability) ----
+  instruct:         {repeat: 1}
+
+  # ---- Replay buffer (anti-forgetting for general knowledge; ~20% target) ----
+  slimpajama:       {cap_tokens: 80000000}
+  wikipedia:        {cap_tokens: 35000000}

@@ -1,0 +1,39 @@
+source: mha_annual_reports
+description: >
+  Ministry of Home Affairs (MHA) annual reports. Critical reference for
+  UPSC GS-III Internal Security (border / cyber / terrorism / Maoist
+  / J&K / North-East coverage) and GS-II Governance (administrative
+  reforms, police modernization). Discovered via scrape of
+  mha.gov.in/en/documents/annual-reports on 2026-06-08.
+
+items:
+  - url: "https://www.mha.gov.in/sites/default/files/AREnglish_24032026.pdf"
+    title: "MHA Annual Report 2024-25 (English)"
+    filename: "MHA_AR_2024_25.pdf"
+  - url: "https://www.mha.gov.in/sites/default/files/AnnualReport202122_24112022%5B1%5D.pdf"
+    title: "MHA Annual Report 2021-22 (English)"
+    filename: "MHA_AR_2021_22.pdf"
+  - url: "https://www.mha.gov.in/sites/default/files/AnnualReportEngLish_11102023.pdf"
+    title: "MHA Annual Report 2022-23 (English)"
+    filename: "MHA_AR_2022_23.pdf"
+  - url: "https://www.mha.gov.in/sites/default/files/AnnualReport_05_06.pdf"
+    title: "MHA Annual Report 2005-06"
+    filename: "MHA_AR_2005_06.pdf"
+  - url: "https://www.mha.gov.in/sites/default/files/AnnualReport_06_07.pdf"
+    title: "MHA Annual Report 2006-07"
+    filename: "MHA_AR_2006_07.pdf"
+  - url: "https://www.mha.gov.in/sites/default/files/AnnualReport_07_08.pdf"
+    title: "MHA Annual Report 2007-08"
+    filename: "MHA_AR_2007_08.pdf"
+  - url: "https://www.mha.gov.in/sites/default/files/AnnualReport_08_09.pdf"
+    title: "MHA Annual Report 2008-09"
+    filename: "MHA_AR_2008_09.pdf"
+  - url: "https://www.mha.gov.in/sites/default/files/AnnualReport_09_10.pdf"
+    title: "MHA Annual Report 2009-10"
+    filename: "MHA_AR_2009_10.pdf"
+  - url: "https://www.mha.gov.in/sites/default/files/AnnualReport_10_11.pdf"
+    title: "MHA Annual Report 2010-11"
+    filename: "MHA_AR_2010_11.pdf"
+  - url: "https://www.mha.gov.in/sites/default/files/AnnualReport_11_12.pdf"
+    title: "MHA Annual Report 2011-12"
+    filename: "MHA_AR_2011_12.pdf"

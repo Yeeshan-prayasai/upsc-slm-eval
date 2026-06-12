@@ -1,0 +1,36 @@
+# SFT — Qwen-3.5-4B, continues from its CPT adapter
+# (see sft_gemma.yaml for the rationale on derived steps + data-side
+# length control)
+base_model: Qwen/Qwen3.5-4B
+train_jsonl: data/sft_v2/train.jsonl
+valid_jsonl: data/sft_v2/valid.jsonl
+output_dir: adapters/qwen35-4b-upsc-v2-sft
+resume_lora_from: adapters/qwen35-4b-upsc-v2-cpt/final
+
+max_steps: null
+epochs: 2.0
+
+lora:
+  r: 64
+  alpha: 16
+  dropout: 0.05
+  use_rslora: true
+  bias: none
+  task_type: CAUSAL_LM
+
+optim:
+  learning_rate: 2.0e-4
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 1.0e-8
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+warmup_ratio: 0.03
+min_lr_rate: 0.1
+
+save_steps: 100
+save_total_limit: 3
+logging_steps: 50
+eval_steps: 100
+report_to: none

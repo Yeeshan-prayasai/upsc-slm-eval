@@ -196,7 +196,18 @@ def main() -> int:
                     help="HF runner: group N predictions into one model.generate() "
                          "call. >1 trades per-row TTFT precision for ~5-10× "
                          "throughput on GPU. No-op for MLX/Gemini backends.")
+    # v2 adapter override: point C1a/C1b at a different merged-HF / MLX dir
+    # (a v2 cell adapter) without touching the hardcoded v1 CONDITIONS.
+    ap.add_argument("--adapter-dir", type=Path, default=None,
+                    help="Override the C1a/C1b model dir (merged HF dir for "
+                         "--backend hf, MLX dir for --backend mlx). Used by "
+                         "the v2/ablation eval targets; default = v1 paths.")
     args = ap.parse_args()
+
+    if args.adapter_dir is not None and args.condition in ("C1a", "C1b"):
+        short, _mlx, _hf = CONDITIONS[args.condition]
+        CONDITIONS[args.condition] = (short, args.adapter_dir, args.adapter_dir)
+        print(f"[run] {args.condition} adapter override → {args.adapter_dir}")
 
     if not EVAL_SET.exists():
         print(f"[FAIL] {EVAL_SET} not found; run `make freeze` first")

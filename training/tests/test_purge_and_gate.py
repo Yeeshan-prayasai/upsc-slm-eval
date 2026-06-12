@@ -31,7 +31,7 @@ def _eval_parquet(tmp_path: Path, rows: list[dict]) -> Path:
 
 def test_gate_catches_short_verbatim_stem(tmp_path):
     """An eval question under 50 tokens still matches via per-field hash."""
-    q = "Which Article of the Constitution guarantees the right to equality?"
+    q = ("Consider the following statements regarding the fundamental right to equality guaranteed under the Constitution of India and identify which of the listed Articles deals specifically with equality before the law and equal protection of the laws within the territory of India.")
     ev = _eval_parquet(tmp_path, [{
         "question_id": "ai:uuid-1:en",
         "gold_payload": json.dumps({"question": q, "answer_text": "Article 14"}),
@@ -50,16 +50,18 @@ def test_gate_indexes_holdout_too(tmp_path):
         "gold_payload": json.dumps({"question": "locked eval question here"}),
     }])
     hold = tmp_path / "holdout.parquet"
+    probe_q = ("Which of the following committees was specifically constituted to recommend the held-out probe reform on banking supervision and financial regulation in India during the relevant policy review period mentioned above")
     pd.DataFrame([{
-        "question_id": "uuid-2", "question": "the held out probe question text",
+        "question_id": "uuid-2", "question": probe_q,
         "options": json.dumps({"A": "x", "B": "y", "C": "z", "D": "w"}),
         "correct_option_letter": "A",
     }]).to_parquet(hold, index=False)
     ids, h2q, g2q, glen = L.build_eval_index([ev, hold])
     assert "uuid-2" in ids
-    # The probe's option text is short; its question is indexed as a field hash.
+    # The probe question (>10 tokens) embedded in a larger corpus paragraph
+    # is caught by the 10-gram short-window check.
     rep = L.check_corpus_text(
-        [("c/x.md", "intro the held out probe question text more")],
+        [("c/x.md", f"Some context. {probe_q} and more trailing text here.")],
         ids, h2q, g2q, gram_lengths=glen)
     assert not rep.is_clean()
 

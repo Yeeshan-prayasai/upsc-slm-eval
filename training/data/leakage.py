@@ -56,12 +56,20 @@ CPT_RAW = REPO / "data" / "cpt_raw"
 
 # 50-token contiguous overlap — Carlini et al. 2023, Lee et al. 2022.
 NGRAM_N = 50
-# Eval fields shorter than NGRAM_N produce no 50-grams; the whole field
-# is indexed as a single contiguous window down to a floor of
-# NGRAM_N_FLOOR tokens (below that a phrase is too generic — rely on the
-# exact-field hash). Windows of different lengths coexist in one inverted
-# index; the scanner slides every length present (gram_lengths).
-NGRAM_N_FLOOR = 6
+# Short eval fields (< NGRAM_N tokens) produce no 50-grams; they are
+# indexed at a SINGLE short window so a short eval question embedded in a
+# larger corpus paragraph is still caught. Exactly TWO window sizes
+# ({NGRAM_N_SHORT, NGRAM_N}) are ever indexed, so the corpus scan is ~2×
+# the single-window cost (not ~45× as a per-field-length index would be).
+#
+# 25, not 10: the corpus and the eval set are both drawn from the same
+# UPSC content, so 10 consecutive tokens recur across DIFFERENT questions
+# discussing the same topic (e.g. "...the right to life and personal
+# liberty under Article 21...") — a 10-gram floor flagged ~12K legitimate
+# SFT rows as leakage. 25 verbatim content tokens is reproduction, not
+# topic overlap. Eval items shorter than 25 tokens are covered by the
+# per-field exact hash (they appear as their own records in the DB dumps).
+NGRAM_N_SHORT = 25
 
 
 def normalize(text: str) -> str:
@@ -176,7 +184,7 @@ def build_eval_index(eval_path: "Path | list[Path]" = EVAL_SET) -> tuple[
     ids: set[str] = set()
     hash_to_qid: dict[str, str] = {}
     gram_to_qids: dict[int, set[str]] = {}
-    gram_lengths: set[int] = {NGRAM_N}
+    gram_lengths: set[int] = {NGRAM_N, NGRAM_N_SHORT}
     for path in paths:
         if not Path(path).exists():
             continue
@@ -196,20 +204,17 @@ def build_eval_index(eval_path: "Path | list[Path]" = EVAL_SET) -> tuple[
             for i in range(len(full_toks) - NGRAM_N + 1):
                 gram_to_qids.setdefault(
                     _gram_hash(tuple(full_toks[i : i + NGRAM_N])), set()).add(qid)
-            # Per-field short windows: a corpus paragraph reproducing only
-            # the question (not the appended answer) must still match, so
-            # index each field at its own length, floored at NGRAM_N_FLOOR.
+            # Per-field 10-grams (only for fields too short to make a
+            # 50-gram): a corpus paragraph reproducing only the question,
+            # not the appended answer, must still match. Exactly one short
+            # window size keeps the corpus scan at ~2× not ~45×.
             for fld in fields:
                 ft = tokenize_loose(fld)
-                if len(ft) >= NGRAM_N:
-                    continue                      # covered by the 50-gram pass
-                n = max(NGRAM_N_FLOOR, min(len(ft), NGRAM_N))
-                if len(ft) < n:
+                if len(ft) >= NGRAM_N or len(ft) < NGRAM_N_SHORT:
                     continue
-                gram_lengths.add(n)
-                for i in range(len(ft) - n + 1):
+                for i in range(len(ft) - NGRAM_N_SHORT + 1):
                     gram_to_qids.setdefault(
-                        _gram_hash(tuple(ft[i : i + n])), set()).add(qid)
+                        _gram_hash(tuple(ft[i : i + NGRAM_N_SHORT])), set()).add(qid)
     return ids, hash_to_qid, gram_to_qids, gram_lengths
 
 

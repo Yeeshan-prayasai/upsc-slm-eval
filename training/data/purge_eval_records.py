@@ -109,7 +109,36 @@ def purge(root: Path = CPT_CLEAN_DEDUP) -> int:
             print(f"  {f.relative_to(root)}: dropped {dropped} paragraphs")
             total_dropped += dropped
 
-    print(f"[purge] {total_dropped} records/paragraphs purged of {total_in:,} scanned")
+    # .jsonl sources (instruct slice + replay buffer) were never purged —
+    # they contain `{"text": ...}` or `{"prompt":..,"completion":..}` rows.
+    # Drop leaked rows in place.
+    import json as _json
+    jsonls = sorted(root.rglob("*.jsonl"))
+    print(f"[purge] scanning {len(jsonls)} .jsonl files row-wise")
+    for f in jsonls:
+        kept_lines, dropped = [], 0
+        for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            total_in += 1
+            try:
+                d = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            text = (d.get("text") or "").strip()
+            if not text and d.get("prompt"):
+                text = f"{d.get('prompt','')} {d.get('completion','')}".strip()
+            if _record_leaks(text, hash_to_qid, gram_to_qids, gram_lengths):
+                dropped += 1
+                continue
+            kept_lines.append(line)
+        if dropped:
+            f.write_text("\n".join(kept_lines) + "\n", encoding="utf-8")
+            print(f"  {f.relative_to(root)}: dropped {dropped} rows")
+            total_dropped += dropped
+
+    print(f"[purge] {total_dropped} records/paragraphs/rows purged of {total_in:,} scanned")
     return 0
 
 

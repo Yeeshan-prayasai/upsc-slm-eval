@@ -39,17 +39,31 @@ Adapter does **not** merge to the production candidate unless:
 
 All gates evaluated on the **English stratum only**. Hindi gates live in `v2-hindi-strategy.md`.
 
-| Gate | v1 baseline (EN) | v2 target | Failure means |
+**Gates recalibrated 2026-06-15** to honest, literature-grounded expected values
+(3 web-researched passes; full citations + dual framing in
+[`v2-target-metrics.md`](v2-target-metrics.md)). The earlier ≥0.75 / ≥1.40
+targets were aspirational and are NOT achievable with single-L40S LoRA-CPT at
+~0.19B domain tokens — they're retained only as *future* targets contingent on
+RAG / inference-time calibration / full-FT.
+
+| Gate | v1 baseline (EN) | v2 honest target | Failure means |
 |---|---:|---:|---|
-| Task A accuracy EN | 0.652 (Gemma) | **≥ 0.75** (aspirational; +3-6 pp is the literature-realistic expectation — see §11) | CPT didn't deliver enough fact injection |
-| Task A neg-mark score EN | 1.06 (Gemma) | **≥ 1.40** | Wrong-answer confidence still costs marks |
-| Task B BERTScore | 0.833 | **≥ 0.825** (no regression band ±0.01) | CPT damaged the SFT win |
-| Task B word-count adherence | 0.086 | **≥ 0.40** | Length conditioning didn't work |
-| Task C Score MAE | 1.901 (Qwen) | **≤ 2.20** (no regression band) | Grading quality unchanged or better |
-| Task E mains BERTScore | 0.873 (Qwen) | **≥ 0.865** | Current-affairs synthesis preserved |
-| Dev loss trajectory | — | monotonic over 80 % of 500-step pulses | Training divergence; investigate |
-| General-capability holdout (MMLU sample) | base baseline | **within −2 pp** of base | Catastrophic forgetting on general knowledge |
-| Hindi-stratum results | — | **must not regress vs v1** (soft gate) | Hindi shouldn't get *worse* even though it's not the focus; if it does, the English-only CPT bled into Hindi capability and the Hindi strategy needs to start from a different checkpoint |
+| Task A accuracy EN | 0.645 (Gemma) | **≥ 0.69 floor / 0.70 target / 0.72 stretch** | CPT delivered no fact injection beyond noise (LoRA-CPT @0.19B tok closes ~20-25% of the Gemini gap; +0.105→0.75 needs RAG or full-FT) |
+| Task A neg-mark score EN | 1.06 (Gemma) | **≥ 1.10 (no-regression); ~1.20 expected** | calibration regressed. (≥1.40 is a FUTURE gate — needs the deferred inference-time calibration fix; SFT/CPT generically *worsen* calibration, so accuracy gains alone won't reach it) |
+| Task B BERTScore | 0.833 | **≥ 0.825** (no-regression; raw-scale ±0.01 noise floor) | CPT damaged the SFT win. (BERTScore can't *detect* CPT gains — those are factual; demand them on the factuality KPI, not here) |
+| Task B word-count adherence | 0.086 | **0.40 stretch / ≥ 0.30 floor** | Length conditioning didn't work (essay-length + 4B size cap a 4B model near the gate; 0.40 ≈ matching Gemini) |
+| Task C Score MAE | 1.90 (Qwen) | **≤ 2.20 (no-regression); ≤1.90 target** | Grading regressed (grading is rubric/instruction-following, ~CPT-independent) |
+| Task E mains BERTScore | 0.873 (Qwen) | **≥ 0.865** (no-regression) | Current-affairs synthesis regressed |
+| Task F Prelims-expl BERTScore | 0.824 (Qwen) | **≥ 0.814** (NEW no-regression guard) | Explanation quality regressed |
+| Task G Mains-DSL BERTScore | 0.745 (Qwen) | **≥ 0.735** (NEW guard — CPT-perturbation risk) | DSL format fidelity regressed (highest CPT-perturbation risk) |
+| **Factuality KPI (NEW)** | — | **entity/number recall ↑ vs v1** | the *primary* CPT-success signal — BERTScore is blind to the factual grounding CPT adds (DACP 2025) |
+| Dev loss trajectory | — | monotonic; visible decay-tail step-down | Training divergence; investigate |
+| General-capability holdout (MMLU sample) | base baseline | **within −2 pp** of base (>3 pp ⇒ stop) | Catastrophic forgetting on general knowledge |
+| Hindi-stratum results | — | **must not regress vs v1** (soft gate) | English-only CPT bled into Hindi; Hindi strategy starts from a different checkpoint |
+
+**Honest v2 success bar:** beat v1 on Task A by ~+0.05 (→0.70), hold no-regression
+everywhere else, and show the factual gain on a grounding metric BERTScore can't
+see — NOT closing the Gemini gap (out of scope for this token/rank budget).
 
 If a gate fails, the v1 SFT-only adapter remains the production candidate and v2 is re-scoped.
 

@@ -3,8 +3,15 @@
 ## Prerequisites
 
 - Repo pushed to GitHub (private OK — Streamlit Cloud can read private repos via your GitHub auth).
-- The `results/*.parquet` files committed to `main` (they are — verified
-  via `git status`, total ~53 MB across 6 parquets).
+- The `results/*.parquet` files committed to `main` (v1 + v2 shards — see list below).
+
+**Committed result files (all needed by the dashboard):**
+- `results/aggregate.parquet` — v1 per-(condition, task, language, metric) means
+- `results/scores_tier1.parquet` — v1 per-row scored data
+- `results/predictions.parquet` — v1 raw model outputs
+- `results/hypothesis_tests.parquet`, `stratum_heatmap.parquet`, `pre_ft_hindi_probe.parquet`
+- `results/scores_v2_gemma.parquet` — v2 Gemma-4-E4B isolated shard (run `gemma-v2-20260617-102048`)
+- `results/predictions_gemma-v2-20260617-102048_C1a.parquet` — v2 raw outputs
 
 ## One-time setup
 
@@ -38,6 +45,7 @@
 | Results | ✅ | ✅ | Full Tier-1 metric tables (aggregate.parquet) |
 | Significance | ✅ | ✅ | BH-FDR tests + 230-cell heatmap |
 | Per-Row Drill | ✅ | ✅ | Reads `predictions.parquet` + `eval_set.parquet` (now committed). |
+| v2 Results | ✅ | ✅ | Reads `scores_v2_gemma.parquet` + `predictions_gemma-v2-*.parquet` (now committed). |
 | Playground | ❌ graceful-stop | ✅ | Needs MLX + adapters + Gemini key — only runs locally on Apple Silicon |
 
 ## Secrets (none needed for v1 read-only deploy)
@@ -84,7 +92,9 @@ After the first deploy completes:
    `scripts/test_hypotheses.py`, not introduced by this deploy.)
 5. Click **Per-Row Drill** → pick any `question_id` and verify the
    four-condition comparison renders.
-6. Click **Playground** → should show the friendly "Playground
+6. Click **v2 Results** → confirm headline table shows 9 rows all green/amber,
+   and the per-row drill loads v2 Gemma predictions.
+7. Click **Playground** → should show the friendly "Playground
    unavailable in this deployment" notice, no crash.
 
 ## Rollback

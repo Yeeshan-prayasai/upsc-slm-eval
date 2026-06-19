@@ -106,6 +106,18 @@ def load_hindi_probe() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=3600)
+def load_scores_v2_gemma() -> pd.DataFrame:
+    """Per-(question_id) scored rows for v2 Gemma run — isolated shard, C1a only."""
+    return pd.read_parquet(RESULTS / "scores_v2_gemma.parquet")
+
+
+@st.cache_data(ttl=3600)
+def load_predictions_v2_gemma() -> pd.DataFrame:
+    """Per-(question_id, inference_task) raw outputs for v2 Gemma run."""
+    return pd.read_parquet(RESULTS / "predictions_gemma-v2-20260617-102048_C1a.parquet")
+
+
+@st.cache_data(ttl=3600)
 def load_eval_set() -> pd.DataFrame:
     """Frozen 2K eval items — gold + question_id + task + paper + subject + language."""
     return pd.read_parquet(DATA / "eval_set.parquet")

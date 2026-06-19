@@ -1,4 +1,8 @@
-"""v2 Results — Gemma-4-E4B CPT→SFT."""
+"""v2 Results — Gemma-4-E4B CPT→SFT vs Gemini zero-shot, per-row drill.
+
+Shows the v2 Gemma run (scores_v2_gemma.parquet) alongside Gemini ZS (C2
+from scores_tier1.parquet) for a direct Gemma-v2 vs Gemini comparison.
+"""
 from __future__ import annotations
 
 import json
@@ -12,221 +16,276 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils import data as data_utils
 
-st.set_page_config(page_title="v2 Results — UPSC SLM", page_icon="🚀", layout="wide")
+REPO = Path(__file__).resolve().parent.parent.parent
+RESULTS = REPO / "results"
 
-st.title("🚀 v2 Results — Gemma-4-E4B (CPT→SFT)")
+st.set_page_config(page_title="v2 Results — UPSC SLM", page_icon="🧪", layout="wide")
+
+st.title("🧪 v2 Results — Gemma-4-E4B CPT→SFT")
 st.caption(
-    "Run `gemma-v2-20260617-102048` · adapter `gemma4-e4b-upsc-v2-sft/final` merged → bf16. "
-    "Evaluated on the locked 2,000-item eval set (isolated v2 shard, not the pooled aggregate). "
-    "Comparator gates from `v2-target-metrics.md`."
+    "Run `gemma-v2-20260617-102048` · adapter `gemma4-e4b-upsc-v2-sft/final` · "
+    "evaluated over the locked 2,000-item eval set. "
+    "Comparator: Gemini-3-Flash zero-shot (C2) from the v1 eval run."
 )
 
-# ---------- Headline summary ----------
-st.header("Headline — primary objective met ✅")
-st.success(
-    "**CPT+SFT closed the Task-A factual-recall gap to Gemini-3-Flash zero-shot parity.** "
-    "Task A accuracy jumped 0.645→0.884 EN (+0.239) and 0.636→0.932 HI (+0.296). "
-    "Generation quality (Tasks B, E, F, G) held above gate or improved. "
-    "Every task clears its pre-registered gate — this is a clean positive result."
-)
 
-headline_rows = [
-    {"Metric": "Task A acc EN",          "v1": 0.645, "v2": 0.884, "Δ": "+0.239", "Gate": "≥0.69",  "Verdict": "✅ MET"},
-    {"Metric": "Task A acc HI",          "v1": 0.636, "v2": 0.932, "Δ": "+0.296", "Gate": "no-regress", "Verdict": "✅"},
-    {"Metric": "Task A neg-mark EN",     "v1": 1.06,  "v2": 1.764, "Δ": "+0.704", "Gate": "≥1.10",  "Verdict": "✅"},
-    {"Metric": "Task B BERTScore",       "v1": 0.833, "v2": 0.872, "Δ": "+0.039", "Gate": "≥0.825", "Verdict": "✅ improved"},
-    {"Metric": "Task B word-count adh.", "v1": 0.086, "v2": 0.484, "Δ": "+0.398", "Gate": "≥0.40",  "Verdict": "✅ improved"},
-    {"Metric": "Task C MAE (↓)",         "v1": 1.90,  "v2": 2.158, "Δ": "+0.258", "Gate": "≤2.20",  "Verdict": "⚠️ within gate by 0.042"},
-    {"Metric": "Task E BERTScore",       "v1": 0.873, "v2": 0.866, "Δ": "−0.007", "Gate": "≥0.865", "Verdict": "✅ clears"},
-    {"Metric": "Task F BERTScore",       "v1": 0.824, "v2": 0.847, "Δ": "+0.023", "Gate": "≥0.814", "Verdict": "✅ improved"},
-    {"Metric": "Task G BERTScore",       "v1": 0.745, "v2": 0.849, "Δ": "+0.104", "Gate": "≥0.735", "Verdict": "✅ improved"},
+# ── data loaders ─────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def load_v2() -> pd.DataFrame:
+    return pd.read_parquet(RESULTS / "scores_v2_gemma.parquet")
+
+
+@st.cache_data(ttl=3600)
+def load_gemini_zs() -> pd.DataFrame:
+    v1 = pd.read_parquet(RESULTS / "scores_tier1.parquet")
+    return v1[v1["condition"] == "C2"].copy()
+
+
+@st.cache_data(ttl=3600)
+def load_predictions_v2() -> pd.DataFrame:
+    return pd.read_parquet(
+        RESULTS / "predictions_gemma-v2-20260617-102048_C1a.parquet"
+    )
+
+
+@st.cache_data(ttl=3600)
+def load_predictions_gemini() -> pd.DataFrame:
+    p = pd.read_parquet(RESULTS / "predictions.parquet")
+    return p[p["condition"] == "C2"].copy()
+
+
+v2 = load_v2()
+gemini = load_gemini_zs()
+
+
+# ── headline summary table ────────────────────────────────────────────────────
+
+st.header("Headline results")
+
+HEADLINE_ROWS = [
+    # (display label,           column,                   task, lang,  higher, gate)
+    ("Task A — Accuracy EN",    "is_correct",             "A",  "en",  True,  "≥ 0.69"),
+    ("Task A — Accuracy HI",    "is_correct",             "A",  "hi",  True,  "no-regress"),
+    ("Task A — Neg-mark EN",    "upsc_neg_marking_score", "A",  "en",  True,  "≥ 1.10"),
+    ("Task B — BERTScore",      "answer_bertscore_f1",    "B",  "all", True,  "≥ 0.825"),
+    ("Task B — Word-count adh.","word_count_adherence",   "B",  "all", True,  "≥ 0.40"),
+    ("Task C — Score MAE (↓)",  "score_abs_err",          "C",  "all", False, "≤ 2.20"),
+    ("Task E — BERTScore",      "mains_bertscore_f1",     "E",  "all", True,  "≥ 0.865"),
+    ("Task F — BERTScore",      "explanation_bertscore_f1","F", "all", True,  "≥ 0.814"),
+    ("Task G — BERTScore",      "answer_bertscore_f1",    "G",  "all", True,  "≥ 0.735"),
 ]
-headline_df = pd.DataFrame(headline_rows)
-st.dataframe(
-    headline_df,
-    hide_index=True,
-    use_container_width=True,
-    column_config={
-        "Metric":   st.column_config.TextColumn("Metric",   width="medium"),
-        "v1":       st.column_config.NumberColumn("v1",     format="%.3f", width="small"),
-        "v2":       st.column_config.NumberColumn("v2",     format="%.3f", width="small"),
-        "Δ":        st.column_config.TextColumn("Δ",        width="small"),
-        "Gate":     st.column_config.TextColumn("Gate",     width="small"),
-        "Verdict":  st.column_config.TextColumn("Verdict",  width="medium"),
-    },
-)
 
-# ---------- Key findings ----------
-st.header("Key findings")
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("Wins")
-    st.markdown(
-        "- **Task A (Prelims MCQ)**: 0.645→0.884 EN; 0.636→0.932 HI — reaches Gemini-3-Flash zero-shot parity.\n"
-        "- **Task A negative-marking**: 1.06→1.764 — wide margin above ≥1.10 gate.\n"
-        "- **Task B word-count adherence**: 0.086→0.484 — v1's standout regression reversed cleanly.\n"
-        "- **Task B BERTScore**: 0.833→0.872 (+0.039) — generation quality improved.\n"
-        "- **Task F BERTScore**: 0.824→0.847 — Prelims-explanation prompt clears gate with room.\n"
-        "- **Task G BERTScore**: 0.745→0.849 (+0.104) — largest single-task BERTScore gain."
-    )
-with col2:
-    st.subheader("Marginal regressions (still within gate)")
-    st.markdown(
-        "- **Task C MAE**: 1.90→2.158 — within ≤2.20 gate by 0.042. Grading-error magnitude drifted; worth watching in v3.\n"
-        "- **Task E BERTScore**: 0.873→0.866 (−0.007) — essentially flat, still clears ≥0.865 gate.\n\n"
-        "No task failed its gate. Significance testing (paired bootstrap + BH-FDR) was **not re-run** "
-        "on the isolated v2 shard — the deltas above are point estimates from n=200–500 per task."
-    )
 
-st.header("Production recommendation")
-st.info(
-    "**v2 (CPT→SFT) is the Prelims candidate.** It closes the factual-recall gap v1 left open, "
-    "retains all generation leads, and reverses the word-count adherence regression. "
-    "Hybrid routing (v2 for all tasks; Gemini only as fallback for Hindi-heavy edge cases) "
-    "is viable. v3 focus: push Task C MAE and Task E BERTScore further clear of their gates."
-)
+def _mean(df: pd.DataFrame, task: str, col: str, lang: str) -> float:
+    sub = df[df["task"] == task]
+    if lang != "all":
+        sub = sub[sub["language"] == lang]
+    vals = sub[col].dropna()
+    return float(vals.mean()) if len(vals) else float("nan")
 
-# ---------- Per-row drill ----------
-st.header("Per-row drill (v2 Gemma shard)")
+
+summary_rows = []
+for label, col, task, lang, higher, gate in HEADLINE_ROWS:
+    v2_val  = _mean(v2,     task, col, lang)
+    gem_val = _mean(gemini, task, col, lang)
+    if not (pd.isna(v2_val) or pd.isna(gem_val)):
+        delta = v2_val - gem_val
+        wins  = delta > 0 if higher else delta < 0
+        verdict = "✅" if wins else ("⚠️" if abs(delta) < 0.05 else "❌")
+        delta_str = f"{delta:+.3f}"
+    else:
+        delta_str = "—"
+        verdict   = "—"
+    summary_rows.append({
+        "Metric": label,
+        "Gemma v2": round(v2_val, 3) if not pd.isna(v2_val) else None,
+        "Gemini ZS": round(gem_val, 3) if not pd.isna(gem_val) else None,
+        "Δ (v2 − Gem)": delta_str,
+        "Gate": gate,
+        "": verdict,
+    })
+
+st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
 st.caption(
-    "Inspect any eval question: v2 Gemma-FT output alongside scores. "
-    "Only C1a (v2 run) is available in this shard — compare against v1 via the v1 Per-Row Drill page."
+    "Δ = Gemma v2 − Gemini ZS. For MAE (↓) a negative Δ means Gemma v2 has "
+    "lower error (better). Gate from `v2-target-metrics.md`."
 )
 
-try:
-    scores_v2 = data_utils.load_scores_v2_gemma()
-    preds_v2 = data_utils.load_predictions_v2_gemma()
-    eval_set = data_utils.load_eval_set()
-except Exception as e:
-    st.error(f"Could not load v2 data: {e}")
-    st.stop()
 
-# Sidebar filters
+# ── per-row drill ─────────────────────────────────────────────────────────────
+
+st.divider()
+st.header("🔍 Per-row drill — Gemma v2 vs Gemini ZS")
+st.caption("Pick a task and question to compare what each model produced, side-by-side.")
+
+task_opts = sorted(v2["task"].unique().tolist())
 task = st.sidebar.selectbox(
     "Task",
-    options=sorted(eval_set["task"].unique().tolist()),
+    options=task_opts,
     format_func=lambda t: f"{t} — {data_utils.TASK_LABELS.get(t, t)}",
     key="v2_task",
 )
-language = st.sidebar.radio(
+lang = st.sidebar.radio(
     "Language",
-    options=["en", "hi", "all"],
-    index=2,
+    options=["all", "en", "hi"],
+    index=0,
     horizontal=True,
     key="v2_lang",
 )
 
-filtered = eval_set[eval_set["task"] == task]
-if language != "all":
-    filtered = filtered[filtered["language"] == language]
+task_rows = v2[v2["task"] == task].copy()
+if lang != "all":
+    task_rows = task_rows[task_rows["language"] == lang]
 
-if filtered.empty:
-    st.warning(f"No eval rows for task={task}, language={language}.")
+if task_rows.empty:
+    st.warning(f"No v2 rows for task={task}, language={lang}.")
     st.stop()
 
-filtered = filtered.sort_values("question_id")
-options = filtered["question_id"].tolist()
-labels = {
-    qid: f"{qid} — {row['paper']} / {row['subject']} / {row['language']}"
-    for qid, (_, row) in zip(options, filtered.iterrows())
+task_rows = task_rows.sort_values("question_id")
+qid_opts   = task_rows["question_id"].tolist()
+qid_labels = {
+    row["question_id"]: (
+        f"{row['question_id']} — "
+        f"{row.get('paper','?')} / {row.get('subject','?')} / {row.get('language','?')}"
+    )
+    for _, row in task_rows.iterrows()
 }
 
 question_id = st.selectbox(
     "Eval question",
-    options=options,
-    format_func=lambda qid: labels[qid],
+    options=qid_opts,
+    format_func=lambda q: qid_labels[q],
     key="v2_qid",
 )
 
-row = filtered[filtered["question_id"] == question_id].iloc[0]
-gold = json.loads(row["gold_payload"])
+v2_score_row  = v2[v2["question_id"] == question_id]
+gem_score_row = gemini[gemini["question_id"] == question_id]
 
-st.subheader(f"Question {question_id}")
-meta_cols = st.columns(4)
-meta_cols[0].metric("Task", task)
-meta_cols[1].metric("Paper", row["paper"])
-meta_cols[2].metric("Subject", row["subject"])
-meta_cols[3].metric("Language", row["language"])
+# Metadata strip
+if not v2_score_row.empty:
+    r = v2_score_row.iloc[0]
+    mc = st.columns(4)
+    mc[0].metric("Task", task)
+    mc[1].metric("Paper", r.get("paper", "—"))
+    mc[2].metric("Subject", r.get("subject", "—"))
+    mc[3].metric("Language", r.get("language", "—"))
 
-with st.expander("Gold payload", expanded=True):
-    st.json(gold)
+# Load prediction text
+try:
+    preds_v2  = load_predictions_v2()
+    preds_gem = load_predictions_gemini()
+    has_preds = True
+except Exception:
+    has_preds = False
 
-# Predictions for this question
-qid_preds = preds_v2[preds_v2["question_id"] == question_id]
-qid_scores = scores_v2[scores_v2["question_id"] == question_id]
+HEADLINE_COL = data_utils.HEADLINE_METRIC.get(task, "")
 
-if qid_preds.empty:
-    st.warning(f"No v2 predictions found for question_id={question_id}.")
-    st.stop()
 
-inference_tasks = sorted(qid_preds["inference_task"].unique().tolist())
-inference_task = st.radio(
-    "Inference task variant",
-    options=inference_tasks,
-    horizontal=True,
-    key="v2_inf_task",
-)
-qid_preds = qid_preds[qid_preds["inference_task"] == inference_task]
-
-st.subheader("v2 Gemma-FT output (C1a)")
-sub = qid_preds[qid_preds["condition"] == "C1a"] if "condition" in qid_preds.columns else qid_preds
-score_sub = qid_scores[(qid_scores["condition"] == "C1a") if "condition" in qid_scores.columns else qid_scores.index >= 0]
-
-if sub.empty:
-    st.warning("No prediction row for this question/inference_task.")
-    st.stop()
-
-pred_row = sub.iloc[0]
-
-# Score badges
-if not score_sub.empty:
-    s = score_sub.iloc[0]
+def _score_badges(s: pd.Series, task: str) -> str:
     badges = []
     if task == "A" and pd.notna(s.get("is_correct")):
         badges.append("✅ correct" if s["is_correct"] else "❌ wrong")
     if pd.notna(s.get("format_valid")):
         badges.append("📐 valid" if s["format_valid"] else "📐 invalid")
-    headline_metric = data_utils.HEADLINE_METRIC.get(task)
-    if task != "A" and headline_metric and pd.notna(s.get(headline_metric)):
-        v = s[headline_metric]
-        badges.append(f"{headline_metric}={v:.3f}")
-    if badges:
-        st.caption(" · ".join(badges))
+    if HEADLINE_COL and pd.notna(s.get(HEADLINE_COL)):
+        badges.append(f"{HEADLINE_COL}={s[HEADLINE_COL]:.3f}")
+    return " · ".join(badges)
 
-# Parsed output
-try:
-    parsed = json.loads(pred_row["prediction"]) if isinstance(pred_row["prediction"], str) else pred_row["prediction"]
-except (json.JSONDecodeError, TypeError):
-    parsed = None
 
-raw_text = pred_row.get("raw_output") or ""
-out_tok = int(pred_row.get("output_tokens") or 0)
+def _render_condition(col, title: str, score_df: pd.DataFrame,
+                      pred_df: pd.DataFrame | None, qid: str, task: str):
+    col.subheader(title)
+    if score_df.empty:
+        col.caption("_no score row_")
+        return
 
-if parsed and isinstance(parsed, dict) and parsed.get("_parse_error"):
-    if not raw_text.strip():
-        st.error(f"**Empty response from model.** API reported {out_tok} output tokens but no text content.")
+    badge = _score_badges(score_df.iloc[0], task)
+    if badge:
+        col.caption(badge)
+
+    if pred_df is not None:
+        prow = pred_df[pred_df["question_id"] == qid]
+        if not prow.empty:
+            pr  = prow.iloc[0]
+            raw = pr.get("raw_output") or ""
+            try:
+                parsed = (
+                    json.loads(pr["prediction"])
+                    if isinstance(pr.get("prediction"), str)
+                    else pr.get("prediction")
+                )
+            except Exception:
+                parsed = None
+
+            if parsed and not (isinstance(parsed, dict) and parsed.get("_parse_error")):
+                col.json(parsed)
+            elif raw.strip():
+                col.text(raw[:2000])
+            else:
+                col.caption("_empty response_")
+
+            with col.expander("Raw output"):
+                col.text(raw if raw.strip() else "(empty)")
+
+            col.caption(
+                f"⏱ {int(pr.get('latency_ms') or 0)} ms  ·  "
+                f"📥 {int(pr.get('input_tokens') or 0)} in  ·  "
+                f"📤 {int(pr.get('output_tokens') or 0)} out"
+            )
+        else:
+            col.caption("_no prediction row for this question_")
     else:
-        st.warning("**Parser failed on non-empty output.** See raw output below.")
-elif parsed:
-    st.json(parsed)
+        col.caption("_predictions file unavailable_")
+
+
+st.subheader("Outputs")
+col_v2, col_gem = st.columns(2)
+_render_condition(col_v2,  "Gemma v2 (CPT→SFT)",
+                  v2_score_row,
+                  preds_v2  if has_preds else None,
+                  question_id, task)
+_render_condition(col_gem, "Gemini ZS (C2)",
+                  gem_score_row,
+                  preds_gem if has_preds else None,
+                  question_id, task)
+
+# ── per-metric delta for this question ───────────────────────────────────────
+
+st.subheader("Per-metric comparison for this question")
+
+SKIP = {
+    "run_id","condition","question_id","task","language","paper","subject",
+    "stratum_key","silly_mistake_prone","predicted_letter","correct_letter",
+    "directive_class",
+}
+
+if not v2_score_row.empty and not gem_score_row.empty:
+    v2s  = v2_score_row.iloc[0]
+    gems = gem_score_row.iloc[0]
+    shared = [
+        c for c in v2_score_row.columns
+        if c in gem_score_row.columns
+        and c not in SKIP
+        and pd.notna(v2s.get(c)) and pd.notna(gems.get(c))
+        and isinstance(v2s[c], (int, float))
+    ]
+    if shared:
+        cmp = pd.DataFrame({
+            "Metric":     shared,
+            "Gemma v2":  [round(float(v2s[c]), 4)  for c in shared],
+            "Gemini ZS": [round(float(gems[c]), 4) for c in shared],
+            "Δ":         [round(float(v2s[c]) - float(gems[c]), 4) for c in shared],
+        })
+        st.dataframe(cmp, hide_index=True, use_container_width=True)
+    else:
+        st.caption("No shared numeric metrics with data for this question.")
 else:
-    st.caption("_no parsed output_")
-
-with st.expander("Raw model output"):
-    st.text(raw_text if raw_text.strip() else "(empty — model returned no text)")
-
-st.caption(
-    f"⏱ {int(pred_row['latency_ms'])} ms  ·  "
-    f"📥 {int(pred_row['input_tokens'])} in  ·  "
-    f"📤 {int(pred_row['output_tokens'])} out"
-)
+    st.caption("Score rows missing for one or both models on this question.")
 
 st.sidebar.divider()
-st.sidebar.markdown(
-    "**v2 run details**\n"
-    "- Run: `gemma-v2-20260617-102048`\n"
-    "- Adapter: `gemma4-e4b-upsc-v2-sft/final`\n"
-    "- Shard: `results/scores_v2_gemma.parquet`\n"
-    "- n=3,200 scored rows (C1a only)\n\n"
-    "Source: `v2-results-gemma.md`, `v2-target-metrics.md`."
+st.sidebar.caption(
+    "Sources: `results/scores_v2_gemma.parquet` · "
+    "`results/scores_tier1.parquet` (C2) · "
+    "`results/predictions_gemma-v2-20260617-102048_C1a.parquet`."
 )
